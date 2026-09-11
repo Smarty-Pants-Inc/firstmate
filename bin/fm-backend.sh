@@ -356,6 +356,9 @@ fm_backend_of_meta() {  # <meta-file>
 
 fm_backend_target_of_meta() {  # <meta-file>
   local meta=$1 backend terminal window
+  # An uncertain relocation has no usable endpoint until the owning home's
+  # reconcile-move verifies its destination. Never route through the old ID.
+  [ -z "$(fm_meta_get "$meta" herdr_move)" ] || return 0
   backend=$(fm_backend_of_meta "$meta")
   if [ "$backend" = orca ]; then
     terminal=$(fm_meta_get "$meta" terminal)
@@ -393,6 +396,10 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local session pane recorded_session workspace tab terminal worktree_id surface
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
+  if [ -n "$(fm_meta_get "$meta" herdr_move)" ]; then
+    echo "REFUSED: task $id has an unresolved Herdr move; reconcile its endpoint before control, recovery or cleanup." >&2
+    return 1
+  fi
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
     echo "REFUSED: task $id has no regular endpoint metadata at $meta; preserving task state." >&2
     return 1

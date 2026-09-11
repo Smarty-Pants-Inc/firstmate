@@ -85,6 +85,14 @@
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts.
 #
+# Herdr layout control (owning host/home only, no agent restart):
+#   fm-control.sh <id> move --workspace <id> --expected-window <session:pane>
+#   fm-control.sh <id> reconcile-move
+# move requires an existing destination and a remaining source terminal.
+# It publishes a pending barrier before one native pane.move. Reconcile only
+# verifies that move's destination; it never repeats a move or clears an
+# unknown outcome. Backend mechanics: bin/backends/herdr-pane-move.sh.
+#
 # Environment knobs (all bounded waits, seconds):
 #   FM_CONTROL_POLL              poll interval for postcondition waits (0.5)
 #   FM_CONTROL_SETTLE_WAIT       adapter acknowledgement wait after interrupt (5)
@@ -150,6 +158,7 @@ die() {  # <message>
 
 CONTROL_LOCK=
 CONTROL_LOCK_HELD=0
+MOVE_META_LOCK=
 RELAUNCH_ACTIVE=0
 RELAUNCH_PHASE=start
 
@@ -158,6 +167,9 @@ control_cleanup() {
   if [ "$RELAUNCH_ACTIVE" = 1 ] \
      && declare -F relaunch_rollback >/dev/null 2>&1; then
     relaunch_rollback || true
+  fi
+  if [ -n "$MOVE_META_LOCK" ]; then
+    fm_lock_release "$MOVE_META_LOCK" || true
   fi
   if [ "$CONTROL_LOCK_HELD" = 1 ]; then
     CONTROL_LOCK_HELD=0
@@ -197,6 +209,8 @@ MODEL_SET=0
 EFFORT_SET=0
 NOTE=
 NOTE_SET=0
+MOVE_WORKSPACE=
+MOVE_EXPECTED=
 control_want_value=
 for control_arg in "$@"; do
   if [ -n "$control_want_value" ]; then
@@ -204,6 +218,8 @@ for control_arg in "$@"; do
       --*) die "--$control_want_value requires a value" ;;
     esac
     case "$control_want_value" in
+      workspace) MOVE_WORKSPACE=$control_arg ;;
+      expected_window) MOVE_EXPECTED=$control_arg ;;
       harness) NEW_HARNESS=$control_arg; HARNESS_SET=1 ;;
       model) NEW_MODEL=$control_arg; MODEL_SET=1 ;;
       effort) NEW_EFFORT=$control_arg; EFFORT_SET=1 ;;
@@ -218,6 +234,8 @@ for control_arg in "$@"; do
     continue
   fi
   case "$control_arg" in
+    --workspace) control_want_value=workspace ;;
+    --expected-window) control_want_value=expected_window ;;
     --harness) control_want_value=harness ;;
     --harness=*) NEW_HARNESS=${control_arg#--harness=}; HARNESS_SET=1 ;;
     --model) control_want_value=model ;;
@@ -250,6 +268,15 @@ fi
 case "$NEW_EFFORT" in
   ''|default|low|medium|high|xhigh|max|ultra) ;;
   *) die "--effort must be one of default, low, medium, high, xhigh, max, ultra" ;;
+esac
+
+case "$VERB" in
+  move)
+    [ -n "$MOVE_WORKSPACE" ] && [ -n "$MOVE_EXPECTED" ] \
+      || die "move requires --workspace and --expected-window"
+    fm_backend_endpoint_atom_valid "$MOVE_WORKSPACE" || die "invalid destination workspace"
+    ;;
+  *) [ -z "$MOVE_WORKSPACE$MOVE_EXPECTED" ] || die "move options apply only to move" ;;
 esac
 
 # --- exact task-id resolution ----------------------------------------------
@@ -296,6 +323,20 @@ fi
 if [ -n "$(fm_meta_get "$META" remote_host)" ]; then
   die "task $ID is a remotely placed secondmate on $(fm_meta_get "$META" remote_host); its agent runs outside this home, so no lifecycle action here could verify that it interrupted, stopped, or came back. Drive its lifecycle on that host, and reconcile it through the secondmate recovery path rather than this plane"
 fi
+
+case "$VERB" in
+  move|reconcile-move)
+    [ "$(fm_backend_meta_exact_value "$META" backend)" = herdr ] || die "move is supported only for recorded Herdr endpoints"
+    MOVE_LOCK_PATH=$(fm_meta_lock_path "$META") || exit 1
+    fm_lock_try_acquire "$MOVE_LOCK_PATH" || die "task endpoint metadata is busy"
+    MOVE_META_LOCK=$MOVE_LOCK_PATH
+    fm_backend_source herdr || exit 1
+    # shellcheck source=bin/backends/herdr-pane-move.sh
+    . "$SCRIPT_DIR/backends/herdr-pane-move.sh"
+    fm_backend_herdr_move_task "$META" "$ID" "$MOVE_WORKSPACE" "$MOVE_EXPECTED" "$VERB"
+    exit $?
+    ;;
+esac
 
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND

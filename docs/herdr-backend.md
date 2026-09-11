@@ -15,7 +15,7 @@ Prerequisites:
 - Herdr protocol 14 or newer, installed from [herdr.dev](https://herdr.dev).
 - `jq` for JSON responses.
 - The universal harness and toolchain requirements in [`configuration.md`](configuration.md#toolchain).
-- `python3` only for optional protocol-16 presentation-space ordering and native event subscription.
+- `python3` for optional presentation-space ordering, native event subscription, endpoint moves, and native worktree adoption.
 
 Herdr is dual-licensed AGPL-3.0-or-later or commercial.
 Firstmate invokes its CLI as a separate process.
@@ -71,11 +71,30 @@ Firstmate running outside Herdr entirely has no launcher workspace to inherit, s
 That path needs the home label to identify exactly one workspace: two workspaces sharing it are an unresolvable placement and refuse rather than adopting either.
 Avoid naming a personal workspace `firstmate` or `2ndmate-<id>` for that reason, and because the adapter cannot distinguish that label collision from its own container.
 An older secondmate workspace using `firstmate-<id>` is not migrated automatically; rename it manually before expecting new tasks or recovery to use it.
-Recovery and list-live still scan the first workspace matching the home label, because they address panes they already recorded rather than choosing where new work goes.
+Recovery and list-live retain the home-label scan and also verify this home's exact recorded task endpoints outside that workspace.
+They do not discover ownership through other homes' labels or presentation journals.
+After a native move, launcher discovery resolves the inherited caller alias to its current pane rather than treating the old environment snapshot as a current public ID.
 
 Existing task operations use recorded endpoint ids and do not move a live task when labels change.
 The per-home workspace is reused while it has task tabs.
 Closing its last tab can remove the workspace, and the next spawn recreates it.
+
+## Native project membership and moves
+
+After Treehouse produces a validated linked worktree, a single-task projection can acquire native project membership through `worktree.open` when that method is available.
+`bin/backends/herdr-project.sh` verifies the real Git parent and linked child, the singleton task workspace, and the native prospective target before adoption.
+The returned workspace, tab, pane, terminal and source directory must remain the expected ones.
+Neither labels nor home directories manufacture a Git relationship, and no second allocator runs.
+Flat layouts and secondmate homes are not adopted as linked worktrees by this path.
+
+Native lookup is not an atomic expected-target operation.
+Firstmate checks for conflicting explicit membership and verifies the server's prospective match and returned endpoint under its existing session lock; other UI clients must remain serialized by the receiving owner.
+An unexpected or partial result stops the spawn and preserves the endpoint rather than repeating the request or removing a worktree.
+There is no membership-only detach rollback in the verified native interface.
+
+Current mixed-tab layouts use the [control plane's endpoint move](agent-control.md#herdr-endpoint-moves) after their destination workspace has been verified separately.
+Moving a Lead preserves its actual home and process; it does not turn that home into product Git metadata.
+Native project membership and display labels never replace the owning home's task endpoint record.
 
 ## Presentation spaces
 
@@ -337,7 +356,8 @@ An environment-only session selection can silently reach a different running ser
 `bin/fm-herdr-lab.sh` is the sole supported lifecycle helper for isolated verification.
 It provisions only non-default names beginning with `fm-lab-`, appends an explicit `--session` to allowed task commands, refuses caller-supplied session flags and server/session lifecycle subcommands, and performs destructive stop/delete only through its guarded lifecycle actions.
 Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, or `default:true` identities.
-Its before/after tripwire requires the live default-session snapshot to remain byte-identical.
+Its before/after tripwire requires the explicitly selected protected fleet's native session identity to remain byte-identical, with `default` as the compatibility default.
+The helper header defines the exact identity fields and named-fleet selector; this tripwire is not a full fleet layout or process census.
 
 The helper's header and `--help` own exact commands.
 Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never duplicate the destructive policy.

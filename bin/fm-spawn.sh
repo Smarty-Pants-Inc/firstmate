@@ -3131,6 +3131,26 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
+# Adopt only this exact, already allocated single-task projection. Herdr owns
+# membership; Treehouse and the isolation check above continue to own Git.
+# Flat/secondmate layouts and non-Herdr backends retain their existing path.
+if [ "${HERDR_PROJECTED:-0}" = 1 ] && [ "$KIND" != secondmate ]; then
+  # shellcheck source=bin/backends/herdr-project.sh
+  . "$FM_ROOT/bin/backends/herdr-project.sh"
+  HERDR_ADOPT_CLEANUP=$HERDR_PROJECTION_ABORT_CLEANUP
+  HERDR_PROJECTION_ABORT_CLEANUP=0
+  HERDR_ADOPT_STATUS=0
+  fm_backend_herdr_project_adopt "$HERDR_SES" "$WT" "$HERDR_WORKSPACE_ID" "$HERDR_PANE_ID" \
+    || HERDR_ADOPT_STATUS=$?
+  case "$HERDR_ADOPT_STATUS" in
+    0|2) HERDR_PROJECTION_ABORT_CLEANUP=$HERDR_ADOPT_CLEANUP ;;
+    *)
+      echo "error: native Herdr worktree membership could not be verified for $T; preserving the endpoint and any partial membership; do not repeat or remove the worktree" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # Pre-register Claude's workspace trust for the worktree, at the first point the
 # worktree is known and before any per-task state is created below. The dialog
 # gates the pane before the brief is ever read, and it also gates loading the

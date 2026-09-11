@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Full remote secondmate lifecycle over the deterministic generic SSH boundary.
+# FM_TEST_SEED_ONLY=1 stops after seed/registry coverage, before runtime launch.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -137,7 +138,7 @@ host=$1
 entry=$2
 shift 2
 [ "$host" = remote-mac ] || exit 91
-[ "$entry" = fm-remote-entrypoint.sh ] || exit 92
+case "$entry" in \'/*/bin/fm-remote-entrypoint.sh\') ;; *) exit 92 ;; esac
 cd "$FM_FAKE_REMOTE_CWD" || exit 93
 argv_b64=$4
 command_fields=$(perl -MMIME::Base64=decode_base64 -e '
@@ -477,6 +478,8 @@ rm -rf "$TMP_ROOT/beta-src"
 cat > "$TMP_ROOT/seed-parent/data/projects.md" <<'EOF'
 - beta [direct-PR] - beta project (added 2026-08-06)
 - delta [local-only] - delta project (added 2026-08-06)
+- delta-yolo [local-only +yolo] - delta project (added 2026-08-06)
+- epsilon [no-mistakes] - epsilon project (added 2026-08-06)
 EOF
 BETA_ORIGIN="file://$TMP_ROOT/beta.git"
 PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects")
@@ -500,14 +503,80 @@ assert_grep 'not an accepted clone URL' "$TMP_ROOT/seed-unsafe.out" \
   "the unsafe-origin refusal did not name the reason"
 assert_absent "$TMP_ROOT/seed-unsafe-home" "the unsafe origin still provisioned a remote home"
 
-if FM_SECONDMATE_CHARTER='Local-only charter.' FM_SECONDMATE_SCOPE='local only' \
-  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-localonly remote-mac "$REMOTE_ROOT" \
-  "$TMP_ROOT/seed-localonly-home" "delta=$BETA_ORIGIN" \
-  > "$TMP_ROOT/seed-localonly.out" 2>&1; then
-  fail "a supplied origin bypassed the local-only delivery-mode refusal"
+# A local-only source needs no remote of its own. Exercise both accepted local
+# forms with real git; the no-mistakes stub must stay unused for these projects.
+fm_git_init_commit "$TMP_ROOT/delta-src"
+DELTA_BEFORE=$(projects_snapshot "$TMP_ROOT/delta-src")
+NM_LOG="$TMP_ROOT/no-mistakes.log"
+cat > "$REMOTE_ROOT/bin/no-mistakes" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$NM_LOG'
+SH
+chmod +x "$REMOTE_ROOT/bin/no-mistakes"
+local_index=0
+for local_origin in "$TMP_ROOT/delta-src" "file://$TMP_ROOT/delta-src"; do
+  local_index=$((local_index + 1))
+  local_id="seed-localonly-$local_index"
+  local_home="$TMP_ROOT/$local_id-home"
+  for attempt in 1 2; do
+    out=$(FM_SECONDMATE_CHARTER='Local-only charter.' FM_SECONDMATE_SCOPE='local only' \
+      seed_env "$ROOT/bin/fm-remote-home-seed.sh" "$local_id" remote-mac "$REMOTE_ROOT" \
+      "$local_home" "delta=$local_origin" 2>&1) \
+      || fail "remote local-only seed attempt $attempt failed"$'\n'"$out"
+    [ "$(cat "$local_home/.fm-secondmate-home")" = "$local_id" ] \
+      || fail "local-only seed lost its genuine home marker"
+    [ "$(FM_DATA_OVERRIDE="$local_home/data" "$ROOT/bin/fm-project-mode.sh" delta)" = 'local-only off' ] \
+      || fail "local-only seed changed delivery mode or merge authority"
+    [ "$(git -C "$local_home/projects/delta" remote get-url origin)" = "$local_origin" ] \
+      || fail "local-only seed changed the supplied source"
+    [ "$(git -C "$local_home/projects/delta" rev-parse HEAD)" = "$(git -C "$TMP_ROOT/delta-src" rev-parse HEAD)" ] \
+      || fail "local-only seed did not clone the real source commit"
+  done
+  [ "$(grep -cF -- "- $local_id " "$TMP_ROOT/seed-parent/data/secondmates.md")" -eq 1 ] \
+    || fail "repeated local-only seed duplicated its route"
+done
+[ ! -s "$NM_LOG" ] || fail "local-only seeding initialized no-mistakes"
+[ "$(projects_snapshot "$TMP_ROOT/delta-src")" = "$DELTA_BEFORE" ] \
+  || fail "local-only seeding changed its source repository"
+pass "remote local-only seed preserves posture and source through idempotent absolute and file routes"
+
+# Missing or nonlocal sources cannot take the local-only exception, even though
+# those network forms remain valid for ordinary remote-backed projects.
+for rejected_arg in delta 'delta=https://example.invalid/delta.git' 'delta=ext::git-upload-pack' \
+  "delta=$TMP_ROOT/../delta-src" "delta-yolo=$TMP_ROOT/delta-src"; do
+  if FM_SECONDMATE_CHARTER='Rejected local source.' FM_SECONDMATE_SCOPE='local only' \
+    seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-local-invalid remote-mac "$REMOTE_ROOT" \
+    "$TMP_ROOT/seed-local-invalid-home" "$rejected_arg" > "$TMP_ROOT/local-invalid.out" 2>&1; then
+    fail "local-only seeding accepted an unsupplied or unsafe local source: $rejected_arg"
+  fi
+  assert_absent "$TMP_ROOT/seed-local-invalid-home" "invalid local source created a home"
+  assert_no_grep '- seed-local-invalid ' "$TMP_ROOT/seed-parent/data/secondmates.md" \
+    "invalid local source registered a route"
+done
+
+# Known clone failure rolls back a new home and route. An occupied unmarked
+# directory must survive refusal, and an existing seeded home keeps its bytes.
+if FM_SECONDMATE_CHARTER='Missing local source.' FM_SECONDMATE_SCOPE='local only' \
+  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-local-missing remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/seed-local-missing-home" "delta=$TMP_ROOT/missing.git" \
+  > "$TMP_ROOT/local-missing.out" 2>&1; then
+  fail "local-only seeding accepted an unreachable source"
 fi
-assert_grep 'is local-only and cannot be provisioned remotely' "$TMP_ROOT/seed-localonly.out" \
-  "the local-only refusal did not name the registered mode"
+assert_absent "$TMP_ROOT/seed-local-missing-home" "failed local clone left a home"
+assert_absent "$TMP_ROOT/seed-parent/data/seed-local-missing/brief.md" "failed local clone left a new charter"
+assert_no_grep '- seed-local-missing ' "$TMP_ROOT/seed-parent/data/secondmates.md" "failed local clone left a route"
+mkdir "$TMP_ROOT/local-occupied-home"
+printf 'preserve me\n' > "$TMP_ROOT/local-occupied-home/keep"
+for refused_home in "$TMP_ROOT/local-occupied-home" "$local_home"; do
+  home_before=$(projects_snapshot "$refused_home")
+  if FM_SECONDMATE_CHARTER='Occupied local source.' FM_SECONDMATE_SCOPE='local only' \
+    seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-local-occupied remote-mac "$REMOTE_ROOT" \
+    "$refused_home" "delta=$TMP_ROOT/delta-src" > "$TMP_ROOT/local-occupied.out" 2>&1; then
+    fail "local-only seeding accepted an occupied or differently registered home"
+  fi
+  [ "$(projects_snapshot "$refused_home")" = "$home_before" ] || fail "refused seed changed an occupied home"
+done
+pass "local-only seed refuses invalid, missing and occupied routes without losing existing data"
 
 if FM_SECONDMATE_CHARTER='Unregistered charter.' FM_SECONDMATE_SCOPE='unregistered' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-unregistered remote-mac "$REMOTE_ROOT" \
@@ -538,6 +607,17 @@ assert_absent "$TMP_ROOT/seed-parent/projects/beta" \
 [ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
   || fail "seeding changed the primary project tree"
 pass "remote seeding provisions a supplied origin without touching the primary project tree"
+[ ! -s "$NM_LOG" ] || fail "direct-PR seeding initialized no-mistakes"
+out=$(FM_SECONDMATE_CHARTER='Pipeline charter.' FM_SECONDMATE_SCOPE='pipeline project' \
+  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-pipeline remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/seed-pipeline-home" "epsilon=$BETA_ORIGIN" 2>&1) \
+  || fail "no-mistakes seeding regressed"$'\n'"$out"
+[ "$(cat "$NM_LOG")" = 'init
+doctor' ] || fail "no-mistakes seeding lost its initialization and doctor calls"
+[ "$(FM_DATA_OVERRIDE="$TMP_ROOT/seed-pipeline-home/data" "$ROOT/bin/fm-project-mode.sh" epsilon)" = 'no-mistakes off' ] \
+  || fail "no-mistakes seeding changed its registered posture"
+rm -f "$REMOTE_ROOT/bin/no-mistakes"
+pass "remote-backed modes retain their distinct initialization behavior"
 
 # The receiving host validates the origin itself rather than trusting whatever
 # reached it, so a manifest naming an executable transport provisions nothing.
@@ -558,6 +638,33 @@ assert_grep 'not an accepted clone URL' "$TMP_ROOT/unsafe-origin.out" \
   "remote provisioning did not name the rejected origin"
 assert_absent "$TMP_ROOT/unsafe-origin-home" "the rejected manifest left a remote home behind"
 pass "remote provisioning re-validates a supplied origin at the receiving host"
+
+# A sender cannot bypass the receiver's local-source and registry-posture checks.
+for invalid_local_record in network helper traversal mode yolo; do
+  local_origin="$TMP_ROOT/delta-src"
+  local_registry='- delta [local-only] - delta project (added 2026-08-06)'
+  case "$invalid_local_record" in
+    network) local_origin='https://example.invalid/delta.git' ;;
+    helper) local_origin='ext::git-upload-pack' ;;
+    traversal) local_origin="$TMP_ROOT/../delta-src" ;;
+    mode) local_registry='- delta [direct-PR] - mismatched mode' ;;
+    yolo) local_registry='- delta [local-only +yolo] - unapproved merge authority' ;;
+  esac
+  printf 'schema=fm-remote-home-provision.v1\nid_b64=%s\ncharter_b64=%s\nproject_count=1\nproject=%s|%s|%s|%s\n' \
+    "$(printf invalid-local | base64 | tr -d '\n')" \
+    "$(printf 'Invalid local manifest charter.\n' | base64 | tr -d '\n')" \
+    "$(printf delta | base64 | tr -d '\n')" \
+    "$(printf '%s' "$local_origin" | base64 | tr -d '\n')" \
+    "$(printf '%s' "$local_registry" | base64 | tr -d '\n')" \
+    "$(printf local-only | base64 | tr -d '\n')" > "$TMP_ROOT/invalid-local.manifest"
+  if FM_HOME="$TMP_ROOT/invalid-local-home" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
+    "$REMOTE_ROOT/bin/fm-remote-home-provision.sh" < "$TMP_ROOT/invalid-local.manifest" \
+    > "$TMP_ROOT/invalid-local.out" 2>&1; then
+    fail "receiver accepted an invalid local-only manifest: $invalid_local_record"
+  fi
+  assert_absent "$TMP_ROOT/invalid-local-home" "invalid local-only manifest left a home"
+done
+pass "remote receiver independently rejects invalid local-only sources and registry posture"
 
 # Firstmate is a shared template, so seeding must carry a project origin from any
 # forge or host, not a privileged one. These four URL shapes have to survive the
@@ -703,6 +810,10 @@ cat >> "$PARENT/data/secondmates.md" <<EOF
 EOF
 remote_env "$ROOT/bin/fm-home-seed.sh" validate >/dev/null || fail "mixed local and remote registry validation failed"
 pass "mixed local and remote routes validate without migration"
+if [ "${FM_TEST_SEED_ONLY:-0}" = 1 ]; then
+  echo "SEED TESTS PASSED (runtime lifecycle not selected)"
+  exit 0
+fi
 
 # Launch on the remote home's own configured backend. Parent metadata records
 # host placement separately from that backend and arms the reply source.

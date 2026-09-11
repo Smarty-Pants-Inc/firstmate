@@ -15,7 +15,7 @@ The failure repeated across harnesses and homes, and the workaround (remember to
 
 `bin/fm-control-lib.sh` is the single executable owner of three capability tables, with no side effects, so it can be read as a contract:
 
-- The **verb allowlist**: `interrupt`, `exit`, `relaunch`.
+- The **verb allowlist**: `interrupt`, `exit`, `relaunch`, `move`, `reconcile-move`.
   There is no arbitrary-text and no generic raw-key entry point.
   A caller either names an allowlisted verb or is refused.
 - **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, whether the composer needs clearing afterwards, the command that exits the agent, and which task kinds the adapter is verified to run.
@@ -51,9 +51,27 @@ Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm
 It is not deterministic across the verified adapters: codex, grok, and gemini resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, omp, and kimi have no verified pane-resume contract.
 `relaunch` covers the same need on every adapter, because the brief on disk - not a harness-private session - is the durable instruction.
 
+## Herdr endpoint moves
+
+`move` relocates a recorded Herdr terminal into a new tab in an existing workspace without restarting its agent or changing its source directory or home.
+The owning home's control and metadata locks and the named session's presentation lock serialize Firstmate participants.
+`bin/backends/herdr-pane-move.sh` owns the durable pending-move field, native request, process-identity proof, and endpoint replacement; `bin/fm-control.sh --help` owns the command syntax.
+The pending field makes ordinary endpoint consumers refuse until `reconcile-move` verifies the recorded terminal at the recorded destination.
+Reconciliation never repeats a move or assumes an absent response means no change.
+
+Move-back is another explicit move using the newly returned endpoint, not restoration of the old public tab or pane IDs.
+The source workspace must retain another terminal because Herdr closes an emptied source container.
+A moved active tab can change the visible selection even with `--no-focus`; no exact old-focus restoration is promised.
+Serialize operations against other UI clients, which do not participate in Firstmate's locks.
+A secondmate with an active away daemon is refused because that daemon can retain a cached supervisor endpoint.
+Remote Leads use their actual host-local parent-route records, not the parent's remote-placement placeholder.
+
+This is backend-specific terminal control, independent of agent keybindings or model family.
+Non-Herdr move requests are refused; existing interrupt, exit, and relaunch behavior is unchanged.
+
 ## Transactional relaunch
 
-`relaunch` is the only verb that changes durable records, so it runs as a transaction with a journal at `state/<id>.control-relaunch`, the prior record preserved beside it, and a ship or scout's prior instructions preserved when a progress note is appended.
+`relaunch` changes the running agent and durable records, so it runs as a transaction with a journal at `state/<id>.control-relaunch`, the prior record preserved beside it, and a ship or scout's prior instructions preserved when a progress note is appended.
 
 1. **Resolve the profile.**
    An explicit `--harness`, `--model`, or `--effort` wins.
@@ -89,7 +107,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   Its agent runs on another host, so none of the postconditions this plane verifies could be read for it here; local endpoint validation would refuse the record regardless, because `window=remote:<id>` can never match a local backend's required shape.
   Drive that lifecycle on its own host and reconcile it through the secondmate recovery path.
   For `relaunch` that host-side drive is `bin/fm-on.sh <id> fm-remote-secondmate-control.sh relaunch ...`, whose host-local leg runs this same plane against a record that is ordinary and local there, so every checkpoint, journal, rollback, and postcondition below applies unchanged ([`docs/remote-secondmates.md`](remote-secondmates.md)); `interrupt` and `exit` have no such route.
-- An unverified harness is refused rather than guessed at.
+- A verb requiring harness keybindings refuses an unverified harness rather than guessing them.
 - An implicit relaunch from a prefixed raw-command basename is refused before the agent or durable state is touched because its original launch command cannot be reconstructed.
 - An adapter that is not verified for this task's kind is refused **before** the running agent is stopped, not after.
   Muse is a crewmate and scout adapter only, so relaunching a secondmate onto it refuses while its agent is still up rather than leaving that secondmate with no agent when the launch owner refuses.

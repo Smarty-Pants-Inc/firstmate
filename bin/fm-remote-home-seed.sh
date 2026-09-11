@@ -4,20 +4,22 @@
 # Usage:
 #   fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> {<project>[=<origin-url>]...|--no-projects}
 #
-# The SSH alias must already reach a host whose non-interactive PATH exposes the
-# fixed fm-remote-entrypoint.sh from <remote-root>. The command records the
+# The SSH alias must already reach a host whose <remote-root> supplies the
+# fixed bin/fm-remote-entrypoint.sh. The command records the
 # remote host dimension in data/secondmates.md, gates the host on
-# fm-remote-doctor.sh readiness before touching it, sends a bounded provisioning
+# fm-remote-doctor.sh readiness before home creation, sends a bounded provisioning
 # manifest through fm-on.sh, and lets the remote host clone its own Firstmate
 # home and project origins. No project tree or secret environment is copied.
 #
 # Each project needs an origin the remote account can clone. Firstmate resolves
 # that origin and names it as <project>=<origin-url>, so seeding never requires
-# a clone of that project in this home; a bare <project> is accepted only when
-# this home already has projects/<project>, whose origin is then read instead.
+# a clone here; a bare <project> is accepted only for remote-backed modes when
+# this home has projects/<project>, whose origin is then read instead.
 # bin/fm-project-origin-lib.sh owns which URLs are accepted, and this home's
-# data/projects.md still owns the project's registered delivery mode, so an
-# unregistered or local-only project is refused rather than provisioned.
+# data/projects.md still owns the project's registered delivery mode.
+# Local-only requires yolo off and an explicit <project>=/absolute/path or
+# <project>=file:///path source on the receiving host, never an inferred origin.
+# Unregistered projects are refused. The remote clone proves source reachability.
 # Seeding writes nothing under projects/ and needs no fleet sync first.
 #
 # Known provisioning failure rolls the registry back. SSH status 255 preserves
@@ -45,9 +47,14 @@ MAX_MANIFEST_BYTES=1048576
 . "$SCRIPT_DIR/fm-project-origin-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 encode() { base64 | tr -d '\n'; }
 safe_id() { case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
 
 TMP=
 REGISTRY_LOCK=
@@ -147,11 +154,16 @@ REG_EXISTED=0
 [ -f "$REG" ] && { cp "$REG" "$TMP/registry.before"; REG_EXISTED=1; }
 
 # Keep the parent charter as its durable source, but publish a remote copy whose
-# status path is the remote append-only relay log rather than a local Mac path.
-PARENT_STATUS="$STATE/$ID.status"
-REMOTE_STATUS="$REMOTE_HOME/state/parent-replies.status"
+# reply log and steering inbox both name the receiving host's actual storage.
+PARENT_STATUS=$(shell_quote "$STATE/$ID.status")
+REMOTE_STATUS=$(shell_quote "$REMOTE_HOME/state/parent-replies.status")
+PARENT_INBOX=$(shell_quote "$STATE/$ID.inbox")
+REMOTE_INBOX=$(shell_quote "$REMOTE_HOME/state/parent-route/$ID.inbox")
 while IFS= read -r line || [ -n "$line" ]; do
-  printf '%s\n' "${line//"$PARENT_STATUS"/"$REMOTE_STATUS"}"
+  line=${line//"$PARENT_STATUS"/"$REMOTE_STATUS"}
+  # Assign before printing: Bash 3.2 retains replacement quotes inside "${...}".
+  line=${line//"$PARENT_INBOX"/"$REMOTE_INBOX"}
+  printf '%s\n' "$line"
 done < "$BRIEF" > "$TMP/charter.remote"
 
 PROJECTS_CSV=
@@ -166,7 +178,13 @@ $MODE_LINE
 EOF
   case "$MODE" in
     no-mistakes|direct-PR) ;;
-    local-only) die "project $project is local-only and cannot be provisioned remotely" ;;
+    local-only)
+      [ "$MODE_LINE" = 'local-only off' ] || die "remote local-only project $project requires yolo off"
+      case "$ORIGIN" in
+        /*|file:///*) ;;
+        *) die "local-only project $project requires a supplied local source: $project=/absolute/path or $project=file:///path" ;;
+      esac
+      ;;
     *) die "project $project has unsupported delivery mode: $MODE" ;;
   esac
   # An origin named on the command line is authoritative. Reading one from a
@@ -224,7 +242,7 @@ restore_registry_and_brief() {
 }
 
 # Preflight and, where it can, repair the remote runtime before anything is
-# created on that host. The doctor runs through the same fixed entrypoint as
+# provisioned in the secondmate home. The doctor runs through the same fixed entrypoint as
 # every later call, so it sees the exact PATH the remote home will run under.
 set +e
 fm_remote_readiness_ensure "$SCRIPT_DIR" "$ID"

@@ -5170,6 +5170,74 @@ test_wait_transition_clean_timeout_returns_1() {
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 
+test_moved_launcher_and_recorded_recovery() {
+  local dir log resp fb out home
+  dir="$TMP_ROOT/moved-launcher"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fm-herdr-unit/fmtest.sock"}]}' > "$resp/1.out"
+  printf '1\n' > "$resp/2.exit"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w8:p4","tab_id":"w8:t4","workspace_id":"w8"}}}' > "$resp/3.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w8:t4","workspace_id":"w8"}}}' > "$resp/4.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w8"}]}}' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    HERDR_ENV=1 HERDR_PANE_ID=w7:p3 HERDR_SESSION=fmtest HERDR_SOCKET_PATH=/tmp/fm-herdr-unit/fmtest.sock \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_launcher_identity fmtest || exit 1; printf "%s" "$FM_BACKEND_HERDR_LAUNCHER_PANE_ID"' "$ROOT")
+  [ "$out" = w8:p4 ] || fail "moved launcher did not resolve inherited caller to returned current ID: $out"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''current'$'\x1f''--current' 'moved launcher must resolve only its own caller context'
+
+  dir="$TMP_ROOT/moved-recovery"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$dir/home"; mkdir -p "$home/state"
+  printf '%s\n' 'backend=herdr' 'endpoint_task_id=work' 'window=fmtest:w8:p4' \
+    "project=$dir" "worktree=$dir" 'herdr_session=fmtest' 'herdr_workspace_id=w8' 'herdr_tab_id=w8:t4' 'herdr_pane_id=w8:p4' > "$home/state/work.meta"
+  printf '%s\n' '{"result":{"workspaces":[]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w8:p4","tab_id":"w8:t4","workspace_id":"w8"}}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w8:t4","workspace_id":"w8","label":"fm-work"}}}' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source herdr; fm_backend_herdr_list_live fmtest' "$ROOT")
+  [ "$out" = $'fmtest:w8:p4\tfm-work' ] || fail "recorded moved task outside home workspace was lost: $out"
+  pass 'Herdr moved launcher resolves current caller; recovery follows only owning-home records outside flat workspace'
+}
+
+test_native_project_adoption_contract() (
+  local dir="$TMP_ROOT/project-adopt" rc
+  mkdir -p "$dir"
+  git init -q "$dir/main" || fail 'could not create real Git fixture'
+  git -C "$dir/main" -c user.name=Test -c user.email=test@example.invalid commit -q --allow-empty -m init || fail 'fixture commit failed'
+  git -C "$dir/main" worktree add -q --detach "$dir/linked" || fail 'fixture linked worktree failed'
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/backends/herdr-project.sh"
+  fm_backend_herdr_cli() {
+    shift
+    printf '%s\n' "$*" >> "$dir/calls"
+    case "$1 $2" in
+      'api schema') printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"worktree.open"}}}]}}}' ;;
+      'workspace list')
+        jq -nc --arg wt "$dir/linked" --arg duplicate "${FM_TEST_DUP:-0}" '{result:{workspaces:([{workspace_id:"w2",pane_count:1,tab_count:1}] + if $duplicate == "1" then [{workspace_id:"w3",worktree:{checkout_path:$wt}}] else [] end)}}' ;;
+      'pane list') jq -nc --arg wt "$dir/linked" '{result:{panes:[{pane_id:"w2:p1",tab_id:"w2:t1",workspace_id:"w2",terminal_id:"same",cwd:$wt}]}}' ;;
+      'pane get') jq -nc --arg wt "$dir/linked" '{result:{pane:{pane_id:"w2:p1",tab_id:"w2:t1",workspace_id:"w2",terminal_id:"same",cwd:$wt}}}' ;;
+      'worktree list') jq -nc --arg wt "$dir/linked" '{result:{worktrees:[{path:$wt,is_linked_worktree:true,is_prunable:false,is_bare:false,open_workspace_id:"w2"}]}}' ;;
+      'worktree open') jq -nc --arg wt "$dir/linked" --arg parent "$dir/main" --arg ws "${FM_TEST_WORKSPACE:-w2}" '{result:{already_open:true,workspace:{workspace_id:$ws,worktree:{checkout_path:$wt,repo_root:$parent,is_linked_worktree:true}},root_pane:{pane_id:"w2:p1"},worktree:{path:$wt}}}' ;;
+      *) fail "unexpected native call: $*" ;;
+    esac
+  }
+  fm_backend_herdr_project_adopt fmtest "$dir/linked" w2 w2:p1 || fail 'real Git linked checkout did not adopt existing workspace'
+  : > "$dir/calls"
+  rc=0
+  FM_TEST_DUP=1 fm_backend_herdr_project_adopt fmtest "$dir/linked" w2 w2:p1 || rc=$?
+  expect_code 1 "$rc" 'duplicate explicit checkout membership must refuse'
+  if grep -q '^worktree open' "$dir/calls"; then fail 'duplicate membership reached native adoption'; fi
+  rc=0
+  fm_backend_herdr_project_adopt fmtest "$dir/main" w2 w2:p1 >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" 'primary checkout is not a linked Work'
+  rc=0
+  FM_TEST_WORKSPACE=w9 fm_backend_herdr_project_adopt fmtest "$dir/linked" w2 w2:p1 || rc=$?
+  expect_code 1 "$rc" 'unexpected native target must not be accepted'
+  pass 'Herdr project adoption: real Git isolation, exact native target, duplicate refusal, no second allocator'
+)
+
+test_moved_launcher_and_recorded_recovery
+test_native_project_adoption_contract
 test_version_check_accepts_current_protocol
 test_version_check_refuses_old_protocol
 test_version_check_refuses_missing_herdr

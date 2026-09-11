@@ -50,11 +50,10 @@
 # function has no herdr-specific logic; it just returns meta's window=
 # verbatim).
 #
-# Authoritative task recovery/orphan discovery (ids may not deterministically match live state
-# after a server restart in a differently-configured session; see the
-# verification doc) uses LABEL matching (fm-<id> tab labels), never trusts a
-# stored pane id blindly: fm_backend_herdr_list_live. The presentation journal
-# is deliberately excluded from that path.
+# Recovery/orphan discovery retains the home-scoped fm-<id> label scan and
+# verifies this home's recorded endpoints outside that workspace after moves.
+# Stored IDs alone never prove a live endpoint; pane/tab/workspace and label
+# must agree. fm_backend_herdr_list_live excludes presentation journals.
 #
 # Requires: herdr (CLI + socket), jq (JSON parsing). Bootstrap detects these
 # through fm_backend_required_tools only when herdr is the resolved backend;
@@ -1745,7 +1744,7 @@ fm_backend_herdr_workspace_find() {  # <session>
 #       degrading to a label search.
 fm_backend_herdr_launcher_identity() {  # <session>
   local session=$1 pane=${HERDR_PANE_ID:-} claimed_session claimed_socket session_socket
-  local pane_out tab_out list tab workspace
+  local pane_out tab_out list tab workspace current_pane
   FM_BACKEND_HERDR_LAUNCHER_PANE_ID=""
   FM_BACKEND_HERDR_LAUNCHER_TAB_ID=""
   FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID=""
@@ -1779,10 +1778,20 @@ fm_backend_herdr_launcher_identity() {  # <session>
     return 1
   fi
 
-  pane_out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || {
-    echo "error: herdr launcher pane '$pane' could not be read in session '$session'; refusing to place a worker without its exact parent workspace" >&2
-    return 1
-  }
+  pane_out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || pane_out=
+  if ! printf '%s' "$pane_out" | jq -e --arg pane "$pane" '.result.pane.pane_id == $pane' >/dev/null 2>&1; then
+    # A native move changes public IDs but retains the process's inherited
+    # caller alias. Resolve ONLY that caller, never the globally focused pane.
+    pane_out=$(fm_backend_herdr_cli "$session" pane current --current 2>/dev/null) || {
+      echo "error: herdr launcher caller '$pane' cannot be resolved after a possible move; refusing a guessed parent workspace" >&2
+      return 1
+    }
+    current_pane=$(printf '%s' "$pane_out" | jq -er '.result.pane.pane_id | select(type == "string" and length > 0)') || {
+      echo "error: herdr launcher caller '$pane' returned no current pane; refusing a guessed parent workspace" >&2
+      return 1
+    }
+    pane=$current_pane
+  fi
   tab=$(printf '%s' "$pane_out" | jq -r --arg pane "$pane" '
     select(.result.pane.pane_id == $pane)
     | select((.result.pane.tab_id | type) == "string" and (.result.pane.tab_id | length) > 0)
@@ -3536,28 +3545,47 @@ EOF
   return 1
 }
 
-# fm_backend_herdr_list_live: recovery/orphan discovery. Lists every tab whose
-# label looks like a firstmate task window (fm-<id>) in <session>'s, THIS
-# HOME'S OWN workspace (fm_backend_herdr_workspace_label - never another
-# home's), by LABEL - never by trusting a stored pane id, since ids are not
-# guaranteed stable across every server lifecycle (see herdr-verification-p2.md
-# "ID stability"). A caller running as a given home (e.g. a secondmate
-# recovering its own in-flight work) naturally scopes to that home's own
-# workspace because FM_HOME already names it - no glue needed, unlike the
-# primary-spawns-a-secondmate path in fm-spawn.sh. Read-only: a session/
-# workspace that does not exist yet simply lists nothing. One
-# "<session>:<pane_id>\t<label>" line per live task tab.
+# fm_backend_herdr_list_live: read-only recovery/orphan discovery for this home.
+# Preserve its home-workspace fm-<id> scan, then verify only its own recorded
+# endpoints outside that workspace. Metadata, live pane/tab/workspace identity
+# and task label must agree; pending moves and presentation journals cannot
+# supply a recovery target. No shared-session label sweep or cross-home claim.
+# One "<session>:<pane_id>\t<label>" line per live task tab.
 fm_backend_herdr_list_live() {  # <session>
-  local session=$1 wsid tabs tab_id label pane_id
-  wsid=$(fm_backend_herdr_workspace_find "$session") || return 0
-  [ -n "$wsid" ] || return 0
-  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
+  local session=$1 wsid tabs tab_id label pane_id meta id target info seen=$'\n'
+  wsid=$(fm_backend_herdr_workspace_find "$session") || wsid=
+  tabs='{"result":{"tabs":[]}}'
+  if [ -n "$wsid" ]; then
+    tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 1
+  fi
   while IFS=$'\t' read -r tab_id label; do
     [ -n "$tab_id" ] || continue
     pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || continue
     [ -n "$pane_id" ] || continue
     printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
+    seen="$seen$session:$pane_id"$'\n'
   done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
+  # A moved or projected task can lie outside its home's labeled workspace.
+  # Consult only this home's exact records, never a shared label/agent census
+  # or a projection journal. Pending moves remain unavailable to recovery.
+  for meta in "${FM_STATE_OVERRIDE:-$FM_HOME/state}"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    [ "$(fm_backend_of_meta "$meta")" = herdr ] || continue
+    [ "$(fm_meta_get "$meta" herdr_session)" = "$session" ] || continue
+    id=${meta##*/}; id=${id%.meta}
+    fm_backend_validate_task_endpoint "$meta" "$id" 2>/dev/null || continue
+    target=$FM_BACKEND_VALIDATED_TARGET
+    case "$seen" in *$'\n'"$target"$'\n'*) continue ;; esac
+    pane_id=$(fm_meta_get "$meta" herdr_pane_id)
+    tab_id=$(fm_meta_get "$meta" herdr_tab_id)
+    wsid=$(fm_meta_get "$meta" herdr_workspace_id)
+    info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null) || continue
+    printf '%s' "$info" | jq -e --arg pane "$pane_id" --arg tab "$tab_id" --arg ws "$wsid" '
+      .result.pane.pane_id == $pane and .result.pane.tab_id == $tab and .result.pane.workspace_id == $ws' >/dev/null || continue
+    info=$(fm_backend_herdr_cli "$session" tab get "$tab_id" 2>/dev/null) || continue
+    printf '%s' "$info" | jq -e --arg label "fm-$id" '.result.tab.label == $label' >/dev/null || continue
+    printf '%s\tfm-%s\n' "$target" "$id"
+  done
 }
 
 # --- native event push: pane.agent_status_changed subscriber -----------------
