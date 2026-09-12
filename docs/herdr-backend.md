@@ -15,7 +15,7 @@ Prerequisites:
 - Herdr protocol 14 or newer, installed from [herdr.dev](https://herdr.dev).
 - `jq` for JSON responses.
 - The universal harness and toolchain requirements in [`configuration.md`](configuration.md#toolchain).
-- `python3` for optional presentation-space ordering, native event subscription, endpoint moves, and native worktree adoption.
+- `python3` for optional presentation-space ordering, native event subscription, endpoint moves, native worktree adoption, and retained endpoint enrollment and recovery.
 
 Herdr is dual-licensed AGPL-3.0-or-later or commercial.
 Firstmate invokes its CLI as a separate process.
@@ -82,10 +82,11 @@ Closing its last tab can remove the workspace, and the next spawn recreates it.
 ## Native project membership and moves
 
 After Treehouse produces a validated linked worktree, a single-task projection requires verified native project membership through `worktree.open`.
-`bin/backends/herdr-project.sh` verifies the real Git parent and linked child, the singleton task workspace, and the native prospective target before adoption.
+`bin/backends/herdr-project.sh` verifies the real Git parent and linked child, the singleton task workspace's live foreground directory, and the native prospective target before adoption.
+The creation-time directory can still name the canonical project after allocation and never substitutes for a missing or unverified foreground directory.
 The returned workspace, tab, pane, terminal and source directory must remain the expected ones.
 Neither labels nor home directories manufacture a Git relationship, and no second allocator runs.
-Unavailable capability inspection or unverified membership refuses launch and preserves the allocated terminal, shell and presentation journal for reconciliation.
+Once allocation is submitted, freshening failure, unavailable capability inspection or unverified membership refuses launch and preserves the allocated terminal, shell and presentation journal for reconciliation.
 A retained journal without an authoritative task record refuses another allocation.
 Flat layouts and secondmate homes are not adopted as linked worktrees by this path.
 
@@ -112,7 +113,7 @@ This scan does not prove exclusivity against external sessions whose history sel
 Missing, conflicting, unreadable, or ambiguous evidence stops admission without changing the endpoint.
 Metadata and the inbox are published through the existing backlog transition contract; an unreadable dispatch outcome preserves the record for reconciliation and never reports success.
 
-After receiving that record, use the normal `fm-control.sh <task> relaunch --note <instructions>` path.
+After receiving that record, use the normal [transactional relaunch](agent-control.md#transactional-relaunch) path; a fresh spawn refuses an enrolled or moved task identity.
 For an enrolled task this opens the recorded existing Pi session file with the recorded UUID, model, effort, and owning home; it never selects a recent session, starts replacement history, or switches runtimes.
 The receiving owner must verify native history/model/effort and the full task read, durable instruction acknowledgement, and result before authorizing source edits.
 Later control and delivery operations recheck the retained endpoint binding; movement requires separate custody reconciliation.
@@ -178,6 +179,7 @@ A move-plan ambiguity, unsupported or failed move, or unproved shell falls back 
 Ordinary non-projected task removal serializes through the same session lock, applies the same focus-safe plan when its close would empty a non-focused workspace, keeps the legitimate plain close when the target is the active tab, and refuses an unlocked close if the lock cannot be acquired.
 Task cleanup acquires that session lock before the task's isolated copy is returned, so a contended lock refuses up front while the copy, every durable record, and the endpoint are all intact for a plain rerun.
 Forced secondmate cleanup recursively preflights every Herdr child endpoint and acquires every affected named-session lock before mutating any child, then retains each child's durable identity unless that exact pane returns structured not-found after its close.
+Interrupted cleanup of moved or enrolled tasks, including descendants, follows the [shared close-replay contract](../bin/fm-backlog-transition-lib.sh); restart cannot retire their metadata before teardown finishes with the retained identity.
 Durable task records are erased only once the exact pane is confirmed gone through its structured presence: after every close path, only a structured not-found response counts as gone, while a present or unknown result retains every record with a visible, retryable error.
 Missing or malformed endpoint identity and missing confirmation machinery are ambiguity, never proof of a gone pane, and refuse record removal the same way.
 If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and preserves the journal for manual inspection.
@@ -215,7 +217,7 @@ Operational compromises:
 - A failed journal publication or projected workspace create stops that spawn instead of falling back flat, so a Herdr create failure surfaces as a spawn failure in every Herdr home rather than only in homes that opted in; every earlier degradation on the fresh projected-create path (no session server, contended presentation lock, absent or ambiguous parent) still warns and continues flat.
 - Recovery of an existing presentation journal deliberately refuses the spawn when the shared presentation lock is contended rather than falling back flat, and default-on makes that refusal reachable in any Herdr home.
 - Existing layouts are not force-renamed or rearranged.
-- Missing or ambiguous restart bindings fall back to the ordinary home workspace while the old projection remains untouched.
+- Restart-binding fallback follows the authoritative-record and duplicate-agent checks above; the old projection remains untouched.
 - Crashes, lost responses, failed exact-pane cleanup, or human renames can leave quarantined spaces; session start removes only the exact home-local, uniquely journal-correlated, childless idle-shell shape above.
 - Spaces have no cross-home cleanup path, and a secondmate child can clean up only from its exact home.
 - Every stale-looking space outside that narrow startup proof still requires manual cleanup in Herdr's UI after human inspection.
@@ -416,5 +418,5 @@ tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 
-Real Herdr tests use the named lab helper and default-session tripwire.
+Real Herdr tests use the [guarded lab contract](#destructive-lab-safety).
 [`verification/runtime-backends.md`](verification/runtime-backends.md#herdr) records the active version, CLI, projection, event, and lifecycle evidence without task-specific chronology.

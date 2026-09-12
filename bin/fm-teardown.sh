@@ -81,9 +81,10 @@
 # in its worktree= or home=. One live path with two task records is the reuse
 # collision itself, whichever record is stale. The recorded endpoint's exact
 # task identity and the record's spawn incarnation are validated separately
-# before cleanup. Its current working directory is only incidental process
-# state: the same worker remains the owner after changing directory, so cwd can
-# never veto teardown of that exact recorded endpoint.
+# before cleanup. For ordinary endpoints, current cwd is incidental process
+# state and does not revoke ownership after a directory change. Moved and
+# enrolled Herdr endpoints additionally require the retained identity checks
+# owned by bin/fm-backend.sh's fm_backend_validate_task_endpoint.
 # The scan and destructive return hold a project-identity lock in the local root
 # Firstmate home's state directory, as resolved by bin/fm-wake-lib.sh's
 # fm_firstmate_root_home; a home seeded from another machine is its own local
@@ -897,9 +898,9 @@ else
 fi
 [ "$remote_teardown_rc" -eq 3 ] || exit "$remote_teardown_rc"
 
-# This is the first cleanup authorization check. It is metadata-only and must
-# complete before fm-guard, a backend command, file removal, branch deletion,
-# worktree return, registry change, or process termination can run.
+# This first cleanup authorization check includes read-only native verification
+# for retained Herdr identities and must complete before fm-guard, file removal,
+# branch deletion, worktree return, registry change, or process termination.
 fm_backend_validate_task_endpoint "$META" "$ID" "$STATE/$ID.backlog-close" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET

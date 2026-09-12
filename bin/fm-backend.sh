@@ -380,14 +380,21 @@ fm_backend_recorded_target_of_meta() {
   [ -n "$window" ] && printf '%s' "$window"
 }
 
-# fm_backend_validate_task_endpoint: validate a task cleanup record entirely
-# from its durable metadata before any runtime command or cleanup mutation.
+# fm_backend_validate_task_endpoint: validate a task record before cleanup
+# mutations. Ordinary records use durable metadata; moved or enrolled Herdr
+# records also require their live native identity. Callers must supply the
+# established owning FM_HOME and configured data context, including descendants.
 # The validation binds the exact task id, selected backend, target, project,
 # and worktree. New non-tmux records carry endpoint_task_id because their
 # opaque runtime ids do not encode the task label. Legacy tmux records remain
 # valid only when their window name itself is exactly fm-<task-id>.
+# Only teardown may supply the exact state/<id>.backlog-close marker to retry
+# a moved or enrolled endpoint already positively confirmed absent. Its validated
+# task, data-root and spawn-generation binding must match; reused or unreadable
+# endpoints never qualify. This exception authorizes no input or source discard.
 # On success, sets FM_BACKEND_VALIDATED_BACKEND and
-# FM_BACKEND_VALIDATED_TARGET. On failure, prints one refusal and returns 1.
+# FM_BACKEND_VALIDATED_TARGET, plus FM_BACKEND_VALIDATED_CLOSED for that retry.
+# On failure, prints a refusal and returns 1.
 fm_backend_meta_exact_value() {  # <meta-file> <key>
   local meta=$1 key=$2 count value
   count=$(grep -c "^$key=" "$meta" 2>/dev/null || true)
@@ -735,22 +742,10 @@ fm_backend_source() {  # <name>
   esac
 }
 
-# fm_backend_resolve_selector: resolve a raw fm-send.sh/fm-peek.sh style
-# selector to a live session-provider target. Four forms, in order:
-#   target with ":"   used as-is (the escape hatch for a window/pane outside
-#                      this firstmate home) - backend-independent, a literal string.
-#   exact task id      routed through <state-dir>/<id>.meta's backend target
-#                      (`window=` normally, `terminal=` for Orca) -
-#                      backend-independent, a stored value, NOT re-verified
-#                      against a live backend inventory (matches today's
-#                      behavior: tmux window names can be trusted from meta
-#                      without a live re-check).
-#   "fm-<id>"          legacy task window label fallback routed through
-#                      <state-dir>/<id>.meta when no exact
-#                      <state-dir>/fm-<id>.meta exists.
-#   anything else      first matched against recorded `window=`/`terminal=`
-#                      metadata, then treated as an ad hoc bare window name and
-#                      resolved by searching the legacy tmux live inventory.
+# fm_backend_resolve_selector implements the task-selector vocabulary owned by
+# docs/configuration.md (Runtime backend). A matched explicit or former selector
+# cannot bypass its owning record's pending-move or retained-identity checks.
+# Only an unclaimed explicit target remains the outside-home escape hatch.
 fm_backend_resolve_selector() {  # <raw-target> <state-dir>
   local raw=$1 state=$2 meta window rc
   case "$raw" in

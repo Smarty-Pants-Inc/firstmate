@@ -2,6 +2,9 @@
 # Retained enrollment: real Git, kernel process identity, native tasks-axi,
 # durable metadata/inbox; fake read-only Herdr API refuses every mutation.
 set -eu
+# Every recovery case belongs to this fixture, including the received command.
+# Do not inherit another owning home's source or private-directory overrides.
+unset FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_PROJECTS_OVERRIDE
 # shellcheck source=tests/fixtures.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 TMP_ROOT=$(fm_test_tmproot fm-enroll-herdr)

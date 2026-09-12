@@ -11,16 +11,21 @@
 # All paths are absolute/physical. The owning home must be in claim_homes.
 # The receiving owner supplies every same-host home which can claim this source
 # or endpoint; no global filesystem/remote-home discovery is inferred. Each
-# supplied home's task-set lock is held through publication. Missing/unsafe
-# homes, unreadable metadata and duplicate claims refuse. This bootstrap path
-# supports Pi ship tasks with tasks-axi only; it does not change backend policy.
+# supplied home's state/*.meta and state/parent-route/*.meta ownership records,
+# including hidden .meta files, are checked under their existing task-set,
+# per-record control and metadata locks through publication. Home task sets are
+# locked in sorted home order, before the task and named-session locks.
+# Missing/unsafe homes, unreadable metadata and duplicate claims refuse.
+# This bootstrap path supports Pi ship tasks with tasks-axi only; it does not
+# change backend policy.
 #
 # Normal metadata and tasks-axi dispatch use fm-backlog-transition-lib, under
 # ordinary spawn/control/meta and shared session locks. The record is published
 # first, so native bootstrap can reconcile a crash before tasks-axi start, just
-# as for spawn. Failed dispatch removes provisional metadata and empty inbox;
-# a committed In-flight row always retains its paired metadata. No endpoint
-# cleanup is permitted here. Resume afterwards through fm-control relaunch;
+# as for spawn. Only a proven uncommitted dispatch rolls back provisional
+# metadata and the empty inbox; committed or unreadable outcomes retain both
+# for reconciliation. No endpoint cleanup is permitted here.
+# Resume afterwards through fm-control relaunch;
 # the recorded exact Pi history is validated and passed by fm-spawn.
 set -u
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)

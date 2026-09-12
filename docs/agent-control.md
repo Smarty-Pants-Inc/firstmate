@@ -15,7 +15,7 @@ The failure repeated across harnesses and homes, and the workaround (remember to
 
 `bin/fm-control-lib.sh` is the single executable owner of three capability tables, with no side effects, so it can be read as a contract:
 
-- The **verb allowlist**: `interrupt`, `exit`, `relaunch`, `move`, `reconcile-move`.
+- The **verb allowlist**, exposed by `fm_control_verbs`.
   There is no arbitrary-text and no generic raw-key entry point.
   A caller either names an allowlisted verb or is refused.
 - **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, whether the composer needs clearing afterwards, the command that exits the agent, and which task kinds the adapter is verified to run.
@@ -49,9 +49,7 @@ Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm
 
 **`resume` is not a verb.**
 It is not deterministic across the verified adapters: some require an explicit session id, others select recent cwd history, and the control plane must not infer a conversation.
-[Retained Pi enrollment](herdr-backend.md#retained-endpoint-enrollment) is the narrow exception: `relaunch` reopens its verified, recorded existing session file and UUID rather than starting fresh.
-This does not add a picker, recent-session fallback, or a general `resume` verb.
-`relaunch` covers the same need on every adapter, because the brief on disk - not a harness-private session - is the durable instruction.
+Ordinary `relaunch` starts a fresh agent from durable instructions; the [retained Pi enrollment contract](herdr-backend.md#retained-endpoint-enrollment) owns its exact-history exception.
 
 ## Herdr endpoint moves
 
@@ -97,7 +95,7 @@ Non-Herdr move requests are refused; existing interrupt, exit, and relaunch beha
    The replacement command supplies those current identities to the agent and its startup children without changing the persistent shell, including when the optional clean launch environment is enabled.
    This supports recovery from stale inherited selectors; it does not restore a server's lost aliases for agents that are still running.
 
-Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
+Supported harness changes use this same transaction, subject to the [retained enrollment restrictions](herdr-backend.md#retained-endpoint-enrollment).
 
 ### Failure and rollback
 
@@ -145,6 +143,7 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 
 ## Verification
 
-- `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
+- `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, marker non-regression, and native move response and former-selector reconciliation, all against a stubbed session provider.
 - `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
+- `tests/fm-enroll-herdr.test.sh` - retained enrollment and exact-history recovery, moved replacement and startup identities, and local and remote recovery through simulated Herdr transport and real Git and kernel identity fixtures.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.

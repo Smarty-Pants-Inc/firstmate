@@ -45,7 +45,12 @@
 # The writer and replay share one complete-record validator, and teardown stages
 # that record before destructive cleanup, so it never publishes or acts on a close
 # replay would reject. The validator pins the data path to this home's configured
-# root before any recovery mutation, then re-runs exactly that close.
+# root before any recovery mutation. If matching-generation metadata still
+# carries a moved or enrolled Herdr identity, replay refuses without changing
+# the metadata, marker or backlog: teardown must finish physical cleanup with
+# that retained binding first. This includes descendant cleanup interrupted
+# before Treehouse return; tests/fm-teardown.test.sh covers owning-home restart.
+# Otherwise replay re-runs exactly that close.
 # `tasks-axi done` on an already-closed task backfills links
 # without moving the close date, so replay is idempotent. Spawn needs no marker:
 # it publishes the meta first, so a crash

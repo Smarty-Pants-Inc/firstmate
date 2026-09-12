@@ -2,6 +2,9 @@
 # Full remote secondmate lifecycle over the deterministic generic SSH boundary.
 # FM_TEST_SEED_ONLY=1 stops after seed/registry coverage, before runtime launch.
 set -u
+# This fixture owns a separate job queue and must start its own worker even
+# when the test runner itself was launched by a remote job.
+unset FM_REMOTE_JOB_ACTIVE
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

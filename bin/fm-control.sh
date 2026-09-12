@@ -42,7 +42,7 @@
 #              already recorded for it.
 #              A prefixed raw-command basename cannot reconstruct its launch
 #              command, so relaunch requires an explicit --harness for it.
-#              --note is required for a ship or scout, whose replacement
+#              --note is required for a ship or scout, whose ordinary replacement
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
@@ -58,13 +58,10 @@
 # endpoint, or discarding work stays with bin/fm-teardown.sh, which owns the
 # landed-work test.
 #
-# Retained Pi enrollment is the narrow history-preserving exception to ordinary
-# relaunch: fm-enroll-herdr records an exact existing file/UUID, and fm-spawn
-# verifies and reopens it. The receiving note remains required.
+# docs/herdr-backend.md (Retained endpoint enrollment) owns the narrow
+# history-preserving relaunch exception; the receiving note remains required.
 # `resume` is not a verb: it is not deterministic across the verified adapters
-# (bin/fm-control-lib.sh's header owns that reasoning). `relaunch` covers the
-# same need for every adapter because the brief on disk, not a harness-private
-# session, is the durable instruction.
+# (bin/fm-control-lib.sh's header owns that reasoning).
 #
 # Targeting is EXACT: only a bare task id with a state/<id>.meta record in
 # THIS home is accepted, and the record must pass the shared endpoint-identity
@@ -77,8 +74,8 @@
 # host, so no postcondition this plane verifies could be read for it here.
 #
 # Fail-closed boundaries:
-#   - An unverified harness, or a harness whose control mechanics are unknown,
-#     is refused rather than guessed at.
+#   - Verbs requiring harness keybindings refuse an unverified harness or
+#     unknown control mechanics rather than guessing.
 #   - A backend that cannot deliver the harness's interrupt key is refused
 #     (Orca's terminal API has no Escape).
 #   - `exit` and `relaunch` require a backend with a recovery-grade agent-state
