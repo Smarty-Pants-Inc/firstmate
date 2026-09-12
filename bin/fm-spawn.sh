@@ -2622,6 +2622,15 @@ if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
 fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$BACKEND" = herdr ]; then
+  HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
+  if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
+    fm_backlog_record_present "$STATE/$ID.meta" "task record" "$STATE" || {
+      echo "error: retained herdr presentation for $ID has no authoritative task record; reconcile the partial allocation before retrying" >&2
+      exit 1
+    }
+  fi
+fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$(fm_backend_of_meta "$STATE/$ID.meta")" = herdr ]; then
   fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" || exit 1
   if grep -Eq '^herdr_(enrollment|route)=' "$STATE/$ID.meta"; then
@@ -2685,16 +2694,11 @@ case "$BACKEND" in
       HERDR_LABEL_HOME=$PROJ_ABS
       HERDR_LAUNCHER_RELATIONSHIP=other-home
     fi
-    HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
     if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
-        fm_backlog_record_present "$STATE/$ID.meta" "task record" "$STATE" || {
-          echo "error: retained herdr presentation for $ID has no authoritative task record; reconcile the partial allocation before retrying" >&2
-          exit 1
-        }
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
           exit 1

@@ -87,7 +87,7 @@ The creation-time directory can still name the canonical project after allocatio
 The returned workspace, tab, pane, terminal and source directory must remain the expected ones.
 Neither labels nor home directories manufacture a Git relationship, and no second allocator runs.
 Retention starts before allocator submission; submission failure, freshening failure, unavailable capability inspection or unverified membership refuses launch and preserves the terminal, shell and presentation journal for reconciliation.
-A retained journal without an authoritative task record refuses another allocation.
+A retained journal without an authoritative task record refuses another allocation, including after presentation is switched off.
 Flat layouts and secondmate homes are not adopted as linked worktrees by this path.
 
 Native lookup is not an atomic expected-target operation.
@@ -179,7 +179,7 @@ A move-plan ambiguity, unsupported or failed move, or unproved shell falls back 
 Ordinary non-projected task removal serializes through the same session lock, applies the same focus-safe plan when its close would empty a non-focused workspace, keeps the legitimate plain close when the target is the active tab, and refuses an unlocked close if the lock cannot be acquired.
 Task cleanup acquires that session lock before the task's isolated copy is returned, so a contended lock refuses up front while the copy, every durable record, and the endpoint are all intact for a plain rerun.
 Forced secondmate cleanup recursively preflights every Herdr child endpoint and acquires every affected named-session lock before mutating any child, then retains each child's durable identity unless that exact pane returns structured not-found after its close.
-Interrupted cleanup of moved or enrolled tasks, including descendants, follows the [shared close-replay contract](../bin/fm-backlog-transition-lib.sh); restart cannot retire their metadata before teardown finishes with the retained identity.
+Interrupted cleanup of moved or enrolled tasks, including descendants and persistent secondmates exempt from backlog transitions, follows the [shared close-replay contract](../bin/fm-backlog-transition-lib.sh); restart cannot retire their metadata before teardown finishes with the retained identity.
 Durable task records are erased only once the exact pane is confirmed gone through its structured presence: after every close path, only a structured not-found response counts as gone, while a present or unknown result retains every record with a visible, retryable error.
 Missing or malformed endpoint identity and missing confirmation machinery are ambiguity, never proof of a gone pane, and refuse record removal the same way.
 If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and preserves the journal for manual inspection.

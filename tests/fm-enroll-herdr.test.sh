@@ -130,6 +130,10 @@ mutate '.common_git = "/wrong/common.git"'; refuse 'wrong common Git' "$TMP_ROOT
 mutate '.claim_homes += ["/missing-enrollment-home"]'; refuse 'unavailable claim scope' "$TMP_ROOT/bad.json"
 mutate '.pi_session_file += ".missing"'; refuse 'missing exact history' "$TMP_ROOT/bad.json"
 mutate '.pi_session_id = "3e6cc5f7-cb6c-4349-9213-48ed7b03f1f2"'; refuse 'wrong expected native UUID' "$TMP_ROOT/bad.json"
+rc=0
+"$ROOT/bin/fm-pi-session-check.sh" "$TMP_ROOT/history.jsonl" "$TMP_ROOT/worktree" > "$OUT" 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail 'history admission accepted a missing recorded UUID'
+[ ! -s "$OUT" ] || fail 'history admission discovered a UUID without the recorded identity'
 cp "$TMP_ROOT/history.jsonl" "$TMP_ROOT/history-before"
 printf '{"type":"session","version":3,"id":"ambiguous"}\n' > "$TMP_ROOT/history.jsonl"
 refuse 'invalid native history'

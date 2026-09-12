@@ -385,7 +385,7 @@ test_unreachable_origin_refuses_stale_pool_base() {
 }
 
 test_projected_allocation_contract() (
-  local refusal=$1 rec id out status pid='' journal
+  local refusal=$1 rec id out status pid='' journal preference
   trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
   id="pool-projected-$refusal"
   rec=$(make_case "projected-$refusal" "$id")
@@ -524,12 +524,15 @@ PY
     fixture "$ROOT" "$journal" "$id" || fail "$refusal lost the reconciliation journal"
   cp "$journal" "$CASE_DIR/journal-before"
   cp "$CASE_DIR/endpoint.json" "$CASE_DIR/endpoint-before"
-  out=$(run_spawn "$id" --scout --backend herdr)
-  status=$?
-  [ "$status" -ne 0 ] || fail "$refusal allowed a blind allocation retry"
-  assert_contains "$out" 'no authoritative task record' "$refusal retry did not require authoritative reconciliation"
-  cmp "$journal" "$CASE_DIR/journal-before" || fail 'retry replaced the retained journal'
-  cmp "$CASE_DIR/endpoint.json" "$CASE_DIR/endpoint-before" || fail 'retry changed the retained endpoint'
+  for preference in on off; do
+    printf '%s\n' "$preference" > "$HOME_DIR/config/herdr-presentation-spaces"
+    out=$(run_spawn "$id" --scout --backend herdr)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$refusal allowed a blind allocation retry with presentation $preference"
+    assert_contains "$out" 'no authoritative task record' "$refusal retry did not require authoritative reconciliation"
+    cmp "$journal" "$CASE_DIR/journal-before" || fail 'retry replaced the retained journal'
+    cmp "$CASE_DIR/endpoint.json" "$CASE_DIR/endpoint-before" || fail 'retry changed the retained endpoint'
+  done
   python3 - "$CASE_DIR" "$refusal" <<'PY' || fail "$refusal retried allocation or removed its endpoint"
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])

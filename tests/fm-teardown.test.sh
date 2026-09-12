@@ -2097,13 +2097,18 @@ test_herdr_retained_teardown_retries_own_closed_generation() (
       || fail "$binding startup retired the unfinished native task"
     [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail "$binding startup repeated endpoint cleanup"
   }
-  for binding in moved enrolled recursive-enrolled recursive-moved; do
+  for binding in moved enrolled recursive-enrolled recursive-moved secondmate-moved; do
     case_dir=$(make_case "herdr-retained-retry-$binding")
     configure_secondmate_home "$case_dir" local "$case_dir/parent"
     channel="$case_dir/parent/state/mate-x.status"
     mkdir -p "$channel"
     write_meta "$case_dir" local-only ship
-    if [[ "$binding" = recursive-* ]]; then
+    if [ "$binding" = secondmate-moved ]; then
+      write_meta "$case_dir" local-only secondmate
+      printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+      tasks-axi add unrelated 'Unrelated work' --kind ship --file "$case_dir/data/backlog.md" >/dev/null
+      cp "$case_dir/data/backlog.md" "$case_dir/backlog-before"
+    elif [[ "$binding" = recursive-* ]]; then
       seed_backlog_in_flight "$case_dir" secondmate
     else
       seed_backlog_in_flight "$case_dir"
@@ -2143,6 +2148,81 @@ with (p/'state/task-x1.meta').open('a') as f:
             shell_pid=int(pid),shell_identity=birth,parent_workspace='wH',pi_session_file=root+'/history.jsonl',pi_session_id=sid)
         f.write('herdr_enrollment='+json.dumps(receipt)+'\nherdr_parent_workspace_id=wH\npi_session_file='+root+'/history.jsonl\npi_session_id='+sid+'\n')
 PY
+    if [ "$binding" = secondmate-moved ]; then
+      mkdir -p "$case_dir/wt/state" "$case_dir/wt/data" "$case_dir/wt/config" "$case_dir/wt/projects"
+      printf 'task-x1\n' > "$case_dir/wt/.fm-secondmate-home"
+      printf 'home=%s/wt\n' "$case_dir" >> "$meta"
+      ln -s "$ROOT/bin" "$case_dir/project/bin"
+      retire_secondmate() {
+        FM_ROOT_OVERRIDE="$case_dir/project" FM_STATE_OVERRIDE="$case_dir/state" \
+          FM_DATA_OVERRIDE="$case_dir/data" FM_CONFIG_OVERRIDE="$case_dir/config" \
+          FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=0 PATH="$case_dir/fakebin:$PATH" \
+          "$TEARDOWN" task-x1
+      }
+      printf 'id=task-x1\ndata=%s/data\nspawn_gen=teardown-test-task-x1\ncleanup_incomplete=0\n' \
+        "$case_dir" > "$case_dir/marker-before"
+      cp "$meta" "$case_dir/meta-before"
+      export FM_FAKE_HERDR_CLOSE_MARKER="$marker" FM_FAKE_HERDR_CLOSE_MARKER_EXPECTED="$case_dir/marker-before"
+      add_lock_aware_treehouse "$case_dir"
+      mv "$case_dir/fakebin/treehouse" "$case_dir/treehouse-return"
+      cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+"$case_dir/treehouse-return" "\$@" || exit \$?
+printf '%s\n' "\$*" >> "$case_dir/returned"
+SH
+      chmod +x "$case_dir/fakebin/treehouse"
+      add_lsof_live_holder "$case_dir"
+      lock=$(git_index_lock_path "$case_dir/wt")
+      : > "$lock"
+      rc=0
+      retire_secondmate > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      [ "$rc" -ne 0 ] || fail 'moved secondmate retirement ignored the live index lock'
+      assert_grep 'not provably stale' "$case_dir/stderr" 'secondmate retirement did not reach the lease return lock refusal'
+      [ -f "$closed" ] && [ -f "$lock" ] && [ ! -e "$case_dir/returned" ] \
+        || fail 'secondmate retirement did not retain the interrupted lease return'
+      cmp "$marker" "$case_dir/marker-before" || fail 'secondmate retirement lost its close receipt'
+      cmp "$meta" "$case_dir/meta-before" || fail 'secondmate retirement lost its endpoint record'
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      pid=''
+      for mutation in live-lock missing-marker wrong-generation reused-endpoint unreadable-endpoint; do
+        case "$mutation" in
+          missing-marker) rm "$marker" ;;
+          wrong-generation) sed 's/^spawn_gen=.*/spawn_gen=other-generation/' "$case_dir/marker-before" > "$marker" ;;
+          reused-endpoint) export FM_FAKE_HERDR_REUSED=1 ;;
+          unreadable-endpoint) export FM_FAKE_HERDR_PANE_GET_GARBAGE=1 ;;
+        esac
+        rc=0
+        retire_secondmate > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
+        [ "$rc" -ne 0 ] || fail "secondmate retirement retry accepted $mutation"
+        cmp "$meta" "$case_dir/meta-before" || fail "secondmate retirement changed metadata on $mutation"
+        cmp "$case_dir/data/backlog.md" "$case_dir/backlog-before" || fail 'secondmate retirement changed backlog work items'
+        [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail 'secondmate retirement closed another endpoint'
+        [ -f "$lock" ] && [ ! -e "$case_dir/returned" ] || fail 'secondmate retirement bypassed the live lock'
+        unset FM_FAKE_HERDR_REUSED FM_FAKE_HERDR_PANE_GET_GARBAGE
+        cp "$case_dir/marker-before" "$marker"
+        if [ "$mutation" = live-lock ]; then
+          FM_HOME="$FM_HOME" bash -c '
+            . "$1/bin/fm-backlog-transition-lib.sh"
+            if fm_backlog_close_marker_replay "$2/state" "$2/state/task-x1.backlog-close" "$2/data"; then exit 1; fi
+            printf "%s\n" "$FM_BACKLOG_TRANSITION_ERROR"
+          ' fixture "$ROOT" "$case_dir" > "$case_dir/replay.out" || fail 'startup replay accepted unfinished secondmate retirement'
+          assert_grep 'retained endpoint cleanup for task-x1 is incomplete' "$case_dir/replay.out" 'startup replay missed the retained secondmate'
+          cmp "$marker" "$case_dir/marker-before" || fail 'startup replay changed the secondmate close receipt'
+          cmp "$meta" "$case_dir/meta-before" || fail 'startup replay erased secondmate ownership'
+        fi
+      done
+      rm "$case_dir/fakebin/lsof" "$lock"
+      retire_secondmate > "$case_dir/retry.out" 2> "$case_dir/retry.err" \
+        || fail "secondmate retirement retry failed: $(cat "$case_dir/retry.err")"
+      [ ! -e "$meta" ] && [ ! -e "$marker" ] || fail 'secondmate retirement left completed close records'
+      assert_grep "return --force $case_dir/wt" "$case_dir/returned" 'secondmate retirement never returned its own lease'
+      [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail 'secondmate retirement repeated endpoint closure'
+      cmp "$case_dir/data/backlog.md" "$case_dir/backlog-before" || fail 'secondmate retirement invented a backlog task'
+      unset FM_FAKE_HERDR_CLOSE_MARKER FM_FAKE_HERDR_CLOSE_MARKER_EXPECTED
+      pass 'moved secondmate retirement retains its exact close receipt across a live lease lock without backlog transitions'
+      continue
+    fi
     if [[ "$binding" = recursive-* ]]; then
       home="$case_dir/home"; nested_home="$home/nested-home"
       mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects" \

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Validate one exact native Pi v3 history and visible writer claims before enrollment or
 # relaunch. Prints its UUID only. Never rewrites history or selects recent/fuzzy.
-# Usage: fm-pi-session-check.sh <absolute-session-file> <physical-worktree> [UUID]
+# Usage: fm-pi-session-check.sh <absolute-session-file> <physical-worktree> <UUID>
 # Current retained-session admission is Linux-only: /proc checks same-user Pi
 # and supported JS-runtime processes for this exact file/UUID. Unreadable
 # candidates and other platforms refuse; unrelated system services are not Pi.
 set -eu
-[ "$#" -ge 2 ] && [ "$#" -le 3 ] || exit 2
+[ "$#" -eq 3 ] || exit 2
 exec python3 - "$@" <<'PY'
 import json, os, pathlib, stat, sys, uuid
 path, cwd = sys.argv[1:3]
@@ -29,7 +29,7 @@ try:
         raise ValueError('not one exact native Pi v3 session')
     if header.get('cwd') != cwd or os.path.realpath(cwd) != cwd:
         raise ValueError('history cwd differs from retained source')
-    if len(sys.argv) == 4 and sid != sys.argv[3]:
+    if sid != sys.argv[3]:
         raise ValueError('history UUID changed')
     for proc in pathlib.Path('/proc').iterdir():
         if not proc.name.isdigit():

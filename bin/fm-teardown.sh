@@ -3130,6 +3130,7 @@ BACKLOG_TRANSITION=$TEARDOWN_BACKLOG_TRANSITION
 BACKLOG_TRANSITION_FLAGS=()
 [ "$BACKLOG_TRANSITION" = close ] || BACKLOG_TRANSITION_FLAGS=(--retain)
 BACKLOG_SKIP_REASON=
+TEARDOWN_CLOSE_MARKER=''
 if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ]; then
   backlog_done_args || {
     echo "error: the pending backlog $BACKLOG_TRANSITION for $ID is not replayable; refusing destructive teardown" >&2
@@ -3200,6 +3201,17 @@ else
     BACKLOG_SKIP_REASON="Orca cleanup recovery is not a launched backlog worker"
   else
     BACKLOG_SKIP_REASON=$TEARDOWN_BACKLOG_SKIP_REASON
+  fi
+  if [ "$BACKEND" = herdr ] && grep -Eq '^herdr_(enrollment|route)=' "$META"; then
+    fm_backlog_meta_spawn_gen "$META" "$STATE" || exit 1
+    META_SPAWN_GEN=$FM_BACKLOG_META_SPAWN_GEN
+    TEARDOWN_CLOSE_MARKER=$(fm_backlog_close_marker_path "$STATE" "$ID") || exit 1
+    if [ -e "$TEARDOWN_CLOSE_MARKER" ] || [ -L "$TEARDOWN_CLOSE_MARKER" ]; then
+      fm_backlog_close_marker_validate "$TEARDOWN_CLOSE_MARKER" "$DATA" "$ID" "$STATE" || exit 1
+      [ "$FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN" = "$META_SPAWN_GEN" ] || exit 1
+    else
+      fm_backlog_close_marker_write "$STATE" "$ID" "$DATA" "$META_SPAWN_GEN" || exit 1
+    fi
   fi
 fi
 
@@ -3411,6 +3423,9 @@ else
     META_LOCK_HELD=0
     echo "error: $ID's endpoint and local copy are cleaned up, but its task record could not be removed ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 1
+  fi
+  if [ -n "$TEARDOWN_CLOSE_MARKER" ]; then
+    fm_backlog_close_marker_remove "$TEARDOWN_CLOSE_MARKER" "$STATE" || exit 1
   fi
 fi
 fm_lock_release "$META_LOCK"
