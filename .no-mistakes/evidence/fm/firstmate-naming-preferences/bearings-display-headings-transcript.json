@@ -1,0 +1,61 @@
+{
+  "name": "bearings-display-headings",
+  "request": {
+    "scenario": "bearings-display-headings",
+    "local_synthetic_preferences": "# Synthetic test preferences\n- Omit direct address altogether.\n- Call the captain the Owner, first mate the Coordinator, second mates Domain leads, and crewmates Workers in human-facing prose.\n- Omit optional nautical flavor.\n",
+    "shared_synthetic_preferences": null,
+    "prompt": "This is an isolated test home. Operate only within FM_HOME and the disposable source root. Do not install tools, access other homes, modify configuration, perform network requests, or dispatch any work. Run /bearings from this home.",
+    "provider": "cliproxyapi",
+    "model": "gpt-6-astra",
+    "argv": [
+      "pi",
+      "--tools",
+      "read,bash,write",
+      "--append-system-prompt",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-0wxmq0zd/source/.agents/skills/bearings/SKILL.md",
+      "--approve",
+      "--offline",
+      "--no-session",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-extensions",
+      "-e",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-0wxmq0zd/source/.pi/extensions/fm-primary-turnend-guard.ts",
+      "-e",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-0wxmq0zd/source/.pi/extensions/fm-primary-pi-watch.ts",
+      "--no-context-files",
+      "--append-system-prompt",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-0wxmq0zd/source/AGENTS.md",
+      "--mode",
+      "json",
+      "--print",
+      "This is an isolated test home. Operate only within FM_HOME and the disposable source root. Do not install tools, access other homes, modify configuration, perform network requests, or dispatch any work. Run /bearings from this home."
+    ],
+    "isolation": "Disposable source and FM_HOME; ephemeral Pi configuration; no model tools; documented test-only FM_GATE_REFUSE_BYPASS."
+  },
+  "result": {
+    "case": "bearings-display-headings",
+    "exit_code": 0,
+    "seconds": 24.5
+  },
+  "assistant_responses": [
+    "## Owner's Call\nNothing needs your action right now.\n\n## Recently Landed\nNo recent completions are in the current baseline.\n\n## Underway\nNothing is underway.\n\n## Charted Next\nNothing is queued."
+  ],
+  "product_operations": [
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "printf 'FM_HOME=%s\\n' \"${FM_HOME:-}\"; printf 'SOURCE_ROOT=%s\\n' \"$PWD\"; snapshot=$(bin/fm-bearings-snapshot.sh --json) && printf '%s\\n' \"$snapshot\"",
+        "timeout": 60
+      }
+    },
+    {
+      "tool_result": "bash",
+      "isError": false,
+      "content": [
+        "FM_HOME=/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-0wxmq0zd/bearings-home\nSOURCE_ROOT=/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-0wxmq0zd/source\n{\n  \"schema\": \"fm-bearings.v1\",\n  \"home\": \".nm-presentation-live-0wxmq0zd/bearings-home\",\n  \"generated\": \"2026-09-12T15:31:59Z\",\n  \"prs\": \"not_requested (run: /bearings include PRs)\",\n  \"in_flight\": [],\n  \"secondmates\": [],\n  \"secondmate_reconcile\": [],\n  \"decisions_open\": [],\n  \"landed\": [],\n  \"gates\": [],\n  \"reports\": [],\n  \"recorded_prs\": [],\n  \"omitted\": [\n    {\n      \"surface\": \"backlog item bodies\",\n      \"reveal\": \"--fields bodies\"\n    },\n    {\n      \"surface\": \"task paths\",\n      \"reveal\": \"--fields paths\"\n    },\n    {\n      \"surface\": \"watch/steer actions\",\n      \"reveal\": \"--fields actions\"\n    },\n    {\n      \"surface\": \"healthy endpoint detail\",\n      \"reveal\": \"--fields endpoints\"\n    },\n    {\n      \"surface\": \"full scout-report inventory\",\n      \"reveal\": \"--all-reports\"\n    },\n    {\n      \"surface\": \"live PR discovery + checks\",\n      \"reveal\": \"--include-prs\"\n    }\n  ]\n}\n"
+      ]
+    }
+  ]
+}

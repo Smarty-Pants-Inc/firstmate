@@ -1,0 +1,28 @@
+{
+  "scenario": "default-greeting",
+  "local_synthetic_preferences": null,
+  "shared_synthetic_preferences": null,
+  "prompt": "Hello.",
+  "provider": "cliproxyapi",
+  "model": "gpt-6-astra",
+  "argv": [
+    "pi",
+    "--approve",
+    "--offline",
+    "--no-session",
+    "--no-tools",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--no-extensions",
+    "-e",
+    "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-lb71dixx/source/.pi/extensions/fm-primary-turnend-guard.ts",
+    "-e",
+    "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-lb71dixx/source/.pi/extensions/fm-primary-pi-watch.ts",
+    "--mode",
+    "json",
+    "--print",
+    "Hello."
+  ],
+  "isolation": "Disposable source and FM_HOME; ephemeral Pi configuration; no model tools; documented test-only FM_GATE_REFUSE_BYPASS."
+}

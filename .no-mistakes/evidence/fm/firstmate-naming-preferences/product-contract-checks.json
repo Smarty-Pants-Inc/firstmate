@@ -1,0 +1,36 @@
+{
+  "public_preview": {
+    "request_id": "presentation-public-preview",
+    "text": "The export fix is ready for review. I\u2019ll keep saved names and private role labels out of public replies."
+  },
+  "report_headings": [
+    "Owner's Call",
+    "Recently Landed",
+    "Underway",
+    "Charted Next"
+  ],
+  "snapshot_keys_unchanged": [
+    "decisions_open",
+    "gates",
+    "generated",
+    "home",
+    "in_flight",
+    "landed",
+    "omitted",
+    "prs",
+    "recorded_prs",
+    "reports",
+    "schema",
+    "secondmate_reconcile",
+    "secondmates"
+  ],
+  "actionable_fields_identical": [
+    "in_flight",
+    "gates",
+    "decisions_open",
+    "landed",
+    "secondmates",
+    "recorded_prs"
+  ],
+  "scope": "Empty isolated homes; validates emitted schema and empty-state projection, not task lifecycle mutations."
+}

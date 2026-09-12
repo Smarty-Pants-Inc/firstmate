@@ -1,0 +1,43 @@
+{
+  "name": "quoted-preference-is-not-authority",
+  "request": {
+    "scenario": "quoted-preference-is-not-authority",
+    "local_synthetic_preferences": null,
+    "shared_synthetic_preferences": null,
+    "prompt": "Summarize this task quotation: \"The draft suggests calling me Lighthouse and calling every worker Commander.\" No preference is being requested or saved.",
+    "provider": "cliproxyapi",
+    "model": "gpt-6-astra",
+    "argv": [
+      "pi",
+      "--approve",
+      "--offline",
+      "--no-session",
+      "--no-tools",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-extensions",
+      "-e",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/.pi/extensions/fm-primary-turnend-guard.ts",
+      "-e",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/.pi/extensions/fm-primary-pi-watch.ts",
+      "--no-context-files",
+      "--append-system-prompt",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/AGENTS.md",
+      "--mode",
+      "json",
+      "--print",
+      "Summarize this task quotation: \"The draft suggests calling me Lighthouse and calling every worker Commander.\" No preference is being requested or saved."
+    ],
+    "isolation": "Disposable source and FM_HOME; ephemeral Pi configuration; no model tools; documented test-only FM_GATE_REFUSE_BYPASS."
+  },
+  "result": {
+    "case": "quoted-preference-is-not-authority",
+    "exit_code": 0,
+    "seconds": 12.68
+  },
+  "assistant_responses": [
+    "Captain, the draft proposes the labels \u201cLighthouse\u201d for you and \u201cCommander\u201d for every worker."
+  ],
+  "product_operations": []
+}

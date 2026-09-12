@@ -1,0 +1,43 @@
+{
+  "name": "shared-over-local",
+  "request": {
+    "scenario": "shared-over-local",
+    "local_synthetic_preferences": "# Synthetic test preferences\n- Address me as Mica.\n- Call the first mate the Coordinator, second mates Domain leads, and crewmates Workers in human-facing prose.\n- Omit nautical flavor.\n",
+    "shared_synthetic_preferences": "# Shared captain preferences\n- Address me as Rowan.\n- Call the first mate the Planner in human-facing prose.\n",
+    "prompt": "Who should I talk to about work, and who helps you handle separate areas and individual tasks?",
+    "provider": "cliproxyapi",
+    "model": "gpt-6-astra",
+    "argv": [
+      "pi",
+      "--approve",
+      "--offline",
+      "--no-session",
+      "--no-tools",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-extensions",
+      "-e",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/.pi/extensions/fm-primary-turnend-guard.ts",
+      "-e",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/.pi/extensions/fm-primary-pi-watch.ts",
+      "--no-context-files",
+      "--append-system-prompt",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/AGENTS.md",
+      "--mode",
+      "json",
+      "--print",
+      "Who should I talk to about work, and who helps you handle separate areas and individual tasks?"
+    ],
+    "isolation": "Disposable source and FM_HOME; ephemeral Pi configuration; no model tools; documented test-only FM_GATE_REFUSE_BYPASS."
+  },
+  "result": {
+    "case": "shared-over-local",
+    "exit_code": 0,
+    "seconds": 19.85
+  },
+  "assistant_responses": [
+    "Rowan, talk to me\u2014the **Planner**\u2014about all your work. I\u2019m your single point of contact.\n\nWhen needed, I delegate to:\n- **Domain leads**, who oversee separate areas and coordinate work within their scope.\n- **Workers**, who handle individual tasks such as implementation, investigation, testing, and review.\n\nThey report back through me. I coordinate the work and bring you results, blockers, and decisions that need your approval."
+  ],
+  "product_operations": []
+}

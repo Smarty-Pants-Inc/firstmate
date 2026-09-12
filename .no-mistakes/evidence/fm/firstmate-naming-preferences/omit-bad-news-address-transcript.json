@@ -1,0 +1,43 @@
+{
+  "name": "omit-bad-news-address",
+  "request": {
+    "scenario": "omit-bad-news-address",
+    "local_synthetic_preferences": null,
+    "shared_synthetic_preferences": null,
+    "prompt": "The build failed because its dependency download timed out. Tell me what that means for delivery and the next step.",
+    "provider": "cliproxyapi",
+    "model": "gpt-6-astra",
+    "argv": [
+      "pi",
+      "--approve",
+      "--offline",
+      "--no-session",
+      "--no-tools",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-extensions",
+      "-e",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/.pi/extensions/fm-primary-turnend-guard.ts",
+      "-e",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/.pi/extensions/fm-primary-pi-watch.ts",
+      "--no-context-files",
+      "--append-system-prompt",
+      "/home/paul/.no-mistakes/worktrees/c00995dcf2eb/01M2B3BS0CC96WVG0ASK40V8XZ/.nm-presentation-live-c07mhcbp/source/AGENTS.md",
+      "--mode",
+      "json",
+      "--print",
+      "The build failed because its dependency download timed out. Tell me what that means for delivery and the next step."
+    ],
+    "isolation": "Disposable source and FM_HOME; ephemeral Pi configuration; no model tools; documented test-only FM_GATE_REFUSE_BYPASS."
+  },
+  "result": {
+    "case": "omit-bad-news-address",
+    "exit_code": 0,
+    "seconds": 20.95
+  },
+  "assistant_responses": [
+    "The build failed because a required dependency wasn\u2019t downloaded in time. That failure alone does **not** show a code defect.\n\n- **Delivery:** blocked until the build succeeds and required checks pass. This attempt hasn\u2019t established that the change is ready to ship.\n- **Next step:** retry the build. If the timeout repeats, investigate the dependency host and network access before changing application code."
+  ],
+  "product_operations": []
+}
