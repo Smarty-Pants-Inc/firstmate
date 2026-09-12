@@ -117,6 +117,31 @@ journal_field() {  # <presentation-journal> <key>
   grep "^$2=" "$1" 2>/dev/null | head -1 | cut -d= -f2-
 }
 
+# On 0.7.4 native lookup follows the root shell, not Treehouse's foreground
+# shell. A projected allocation must remain available for reconciliation.
+assert_membership_refusal() {  # <id> <journal>
+  local id=$1 journal=$2 pane info wt workspace
+  [ "$SPAWN_RC" -ne 0 ] || fail "$id bypassed native membership verification"
+  assert_contains_local "$(cat "$SPAWN_ERR")" 'native Herdr worktree membership could not be verified' \
+    "$id failed before the native membership guard"
+  [ ! -e "$PRES_HOME/state/$id.meta" ] || fail "$id published an unverified task"
+  pane=$(journal_field "$journal" pane_id)
+  workspace=$(journal_field "$journal" workspace_id)
+  info=$(lab pane get "$pane") || fail "$id lost its retained endpoint"
+  wt=$(printf '%s' "$info" | jq -er '.result.pane.foreground_cwd') || fail "$id lost its foreground cwd"
+  [ "$(git -C "$wt" rev-parse --show-toplevel)" = "$wt" ] && [ "$wt" != "$PROJ" ] \
+    || fail "$id did not retain an isolated checkout"
+  WORKTREES+=("$wt")
+  printf '%s' "$info" | jq -e --arg project "$PROJ" --arg workspace "$workspace" \
+    '.result.pane | .cwd == $project and .foreground_cwd != .cwd and .workspace_id == $workspace' >/dev/null \
+    || fail "$id did not reproduce root-shell versus foreground cwd divergence"
+  lab worktree list --cwd "$PROJ" | jq -e --arg wt "$wt" --arg workspace "$workspace" '
+    [.result.worktrees[] | select(.path == $wt and .is_linked_worktree == true)]
+    | length == 1 and (.[0].open_workspace_id != $workspace)' >/dev/null \
+    || fail "$id did not reproduce the 0.7.4 native lookup mismatch"
+  pass "real herdr E2E: Herdr 0.7.4 refuses $id with its linked checkout, endpoint, and journal preserved"
+}
+
 # spawn_from_launcher <launcher-pane|""> <home> <task-id> <project> [extra fm-spawn args...]
 # Composes exactly the Herdr identity Herdr itself injects into a pane's
 # processes. An empty launcher pane means "this firstmate is not running inside
@@ -152,6 +177,7 @@ record_worktree() {  # <meta>
 LAB_SOCKET=$(lab session list --json 2>/dev/null \
   | jq -r --arg s "$HERDR_LAB_SESSION" '.sessions[]? | select(.name == $s) | .socket_path' 2>/dev/null)
 [ -n "$LAB_SOCKET" ] || fail "could not read the isolated lab session's socket path"
+LAB_VERSION=$(lab status --json | jq -er '.server.version') || fail "could not read the lab server version"
 
 # --- scratch world ----------------------------------------------------------
 
@@ -253,10 +279,16 @@ pass "real herdr E2E: the normal unique-label path is unchanged when the launche
 #         UNDER the launcher's exact workspace, not collapsed into it ---------
 
 spawn_from_launcher "$LAUNCH_PRIMARY_PANE" "$PRES_HOME" presU "$PROJ" --mode no-mistakes --yolo off
+PRESU_JOURNAL="$PRES_HOME/state/presU.herdr-presentation"
+if [ "$LAB_VERSION" = 0.7.4 ]; then
+  assert_membership_refusal presU "$PRESU_JOURNAL"
+  PRESU_PANE=$(journal_field "$PRESU_JOURNAL" pane_id)
+else
 [ "$SPAWN_RC" -eq 0 ] || fail "a presentation-enabled spawn from a launcher pane failed"$'\n'"$(cat "$SPAWN_ERR")"
 PRESU_META="$PRES_HOME/state/presU.meta"
 record_worktree "$PRESU_META"
 PRESU_PANE=$(grep '^herdr_pane_id=' "$PRESU_META" | cut -d= -f2-)
+fi
 PRESU_WS=$(workspace_of_pane "$PRESU_PANE")
 [ -n "$PRESU_WS" ] || fail "could not read presU's workspace"
 [ "$PRESU_WS" != "$WS_PRIMARY" ] \
@@ -265,7 +297,6 @@ case "$(label_of_workspace "$PRESU_WS")" in
   "└ "*" · p:"*) : ;;
   *) fail "presU's workspace is not a presentation projection: '$(label_of_workspace "$PRESU_WS")'" ;;
 esac
-PRESU_JOURNAL="$PRES_HOME/state/presU.herdr-presentation"
 [ -f "$PRESU_JOURNAL" ] || fail "a projected spawn did not leave its presentation journal"
 [ "$(journal_field "$PRESU_JOURNAL" version)" = 2 ] \
   || fail "the projection did not publish an exact restart binding"$'\n'"$(cat "$PRESU_JOURNAL")"
@@ -274,7 +305,7 @@ PRESU_JOURNAL="$PRES_HOME/state/presU.herdr-presentation"
 [ "$(journal_field "$PRESU_JOURNAL" workspace_id)" = "$PRESU_WS" ] \
   || fail "the projection journal does not name its own workspace"
 [ "$(focused_workspace)" = "$WS_OTHER" ] || fail "a projected spawn stole focus from the captain's workspace"
-pass "real herdr E2E: presentation spaces still create the isolated child workspace and bind it under the launcher's exact parent, without stealing focus"
+pass "real herdr E2E: the projected allocation binds the launcher's exact parent without stealing focus"
 
 # --- 3. duplicate label, launcher in the NON-first match, driven from a real
 #        Herdr pane so the identity comes from Herdr's own injection ----------
@@ -328,13 +359,18 @@ pass "real herdr E2E: the duplicate-labeled sibling workspace is left entirely u
 #         still hangs off the launcher's exact workspace ---------------------
 
 spawn_from_launcher "$LAUNCH_DUP_PANE" "$PRES_HOME" presD "$PROJ" --mode no-mistakes --yolo off
+PRESD_JOURNAL="$PRES_HOME/state/presD.herdr-presentation"
+if [ "$LAB_VERSION" = 0.7.4 ]; then
+  assert_membership_refusal presD "$PRESD_JOURNAL"
+  PRESD_PANE=$(journal_field "$PRESD_JOURNAL" pane_id)
+else
 [ "$SPAWN_RC" -eq 0 ] || fail "a projected spawn under a duplicated parent label failed"$'\n'"$(cat "$SPAWN_ERR")"
 PRESD_META="$PRES_HOME/state/presD.meta"
 record_worktree "$PRESD_META"
 PRESD_PANE=$(grep '^herdr_pane_id=' "$PRESD_META" | cut -d= -f2-)
+fi
 PRESD_WS=$(workspace_of_pane "$PRESD_PANE")
 [ -n "$PRESD_WS" ] || fail "could not read presD's workspace"
-PRESD_JOURNAL="$PRES_HOME/state/presD.herdr-presentation"
 [ "$(journal_field "$PRESD_JOURNAL" version)" = 2 ] \
   || fail "the duplicate-label projection did not publish a version 2 binding"$'\n'"$(cat "$PRESD_JOURNAL" 2>/dev/null)"
 [ "$(journal_field "$PRESD_JOURNAL" parent_workspace_id)" = "$WS_PRIMARY_DUP" ] \
@@ -350,7 +386,7 @@ PRESD_ORDER=$(lab workspace list 2>/dev/null | jq -r --arg dup "$WS_PRIMARY_DUP"
 [ "$(tab_labels_of_workspace "$WS_PRIMARY")" = "$WS_PRIMARY_TABS_BEFORE" ] \
   || fail "the other same-labeled workspace was mutated by a projected spawn"
 [ "$(focused_workspace)" = "$WS_OTHER" ] || fail "a projected spawn stole focus from the captain's workspace"
-pass "real herdr E2E: with a duplicated home label, a projected worker still hangs off the launcher's exact workspace and the sibling stays untouched"
+pass "real herdr E2E: with a duplicated home label, the projected allocation binds the exact launcher and leaves its sibling untouched"
 
 # --- 4. duplicate label with NO launcher identity refuses before publishing --
 

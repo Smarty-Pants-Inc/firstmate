@@ -94,6 +94,9 @@ Native lookup is not an atomic expected-target operation.
 Firstmate checks for conflicting explicit membership and verifies the server's prospective match and returned endpoint under its existing session lock; other UI clients must remain serialized by the receiving owner.
 An unexpected or partial result stops the spawn and preserves the endpoint rather than repeating the request or removing a worktree.
 There is no membership-only detach rollback in the verified native interface.
+Herdr 0.7.4 exposes `PaneInfo.foreground_cwd`, but its native `worktree.list` and `worktree.open` lookup derives `open_workspace_id` from the root-shell directory and offers no atomic membership attach to an existing pane.
+When Treehouse's foreground shell enters the linked checkout while the root shell remains at the project, that release cannot prove the existing projection's membership, so Firstmate refuses and retains the allocation under the contract above.
+The pinned real-Herdr tests assert this refusal; successful adoption requires a runtime that can prove the existing membership and remains separate from exact-installed receiving acceptance.
 
 Current mixed-tab layouts use the [control plane's endpoint move](agent-control.md#herdr-endpoint-moves) after their destination workspace has been verified separately.
 Moving a Lead preserves its actual home and process; it does not turn that home into product Git metadata.
@@ -122,7 +125,7 @@ Enrollment does not repair missing native membership, recover other partial laun
 ## Presentation spaces
 
 Each new crewmate or scout is placed in a disposable one-task workspace by default, on Herdr 0.8.0 and newer.
-A home opts out by writing `off` into local gitignored `config/herdr-presentation-spaces`, and forces the projection on by writing `on`.
+A home opts out by writing `off` into local gitignored `config/herdr-presentation-spaces`, and requests projection by writing `on`, subject to [native membership verification](#native-project-membership-and-moves).
 An absent file leaves the choice to the version floor below, an empty file and the value `on` are both a deliberate opt-in, values are compared with whitespace stripped and case ignored, and an unrecognized value warns and follows the unconfigured default rather than failing a spawn over a purely visual setting.
 The empty file is the historical presence-based opt-in form, so every home that had already enabled the projection stays enabled with no migration step, and no previously enabled home can be turned off by the default or by the floor.
 A home that never created the file gains the projection at its next Herdr spawn on a supported release; that flip is deliberate, and it reaches only the Herdr backend because no other runtime backend has a projection path.
@@ -134,7 +137,7 @@ Below the floor an unconfigured home uses the ordinary flat per-home layout inst
 That one-warning-per-release record is a `state/.herdr-presentation-floor-<release>` marker; deleting it only makes the same warning appear again, and an upgrade or downgrade re-announces itself because the release is part of the key.
 The floor reads both the installed client's protocol and version and the selected named session's server signals while that server is running, requires both applicable releases to pass, and uses only the client when status positively reports no running server because that client will start it.
 The unconfigured default is rechecked after the server is started or adopted and before any presentation journal or workspace is created, while an unreadable server state or release is treated as unsupported rather than guessed at.
-An explicit `on` is honored below the floor, so a home that deliberately opted in is never silently downgraded; it accepts that documented focus move, and the exact prior-tab restore stays its backstop.
+An explicit `on` is honored below the presentation floor, so a home that deliberately opted in accepts that documented focus move and keeps the exact prior-tab restore as its backstop; neither `on` nor the historical empty opt-in overrides native membership safety.
 The floor has a single owner, the spawn-time gate, so cleanup for a projection that already exists always runs and never strands a workspace, whatever release the home is on now.
 Upgrading Herdr to 0.8.0 or newer is the fix; writing `off` is the immediate mitigation for a home that cannot upgrade yet.
 The setting is inherited into secondmate homes through the normal configuration-convergence owner, and the default needs no special convergence: the primary's absent file and the secondmate's absent file both mean the same unconfigured default, so leaving it converges a secondmate to that same default rather than turning it off, and only an explicit primary `off` propagates the opt-out.
