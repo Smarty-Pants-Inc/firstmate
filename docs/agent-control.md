@@ -91,6 +91,9 @@ Non-Herdr move requests are refused; existing interrupt, exit, and relaunch beha
    A secondmate relaunch does not require one and never rewrites its standing charter.
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
 5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
+   For Herdr, the recorded pane/tab/workspace must match the live endpoint before stopping and again at adoption.
+   The replacement command supplies those current identities to the agent and its startup children without changing the persistent shell, including when the optional clean launch environment is enabled.
+   This supports recovery from stale inherited selectors; it does not restore a server's lost aliases for agents that are still running.
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 

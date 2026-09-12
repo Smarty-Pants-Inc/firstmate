@@ -2940,6 +2940,23 @@ fm_backend_herdr_target_ready() {  # <target>
   fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION" || return 1
 }
 
+# fm_backend_herdr_relaunch_identity: verify a validated task record against the
+# live pane before stopping the agent and again before replacement delivery.
+fm_backend_herdr_relaunch_identity() {  # <meta>
+  local meta=$1 session pane tab workspace live
+  session=$(fm_meta_get "$meta" herdr_session)
+  pane=$(fm_meta_get "$meta" herdr_pane_id)
+  tab=$(fm_meta_get "$meta" herdr_tab_id)
+  workspace=$(fm_meta_get "$meta" herdr_workspace_id)
+  if ! live=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) \
+    || ! printf '%s' "$live" | jq -e --arg pane "$pane" --arg tab "$tab" --arg workspace "$workspace" '
+      .result.pane | .pane_id == $pane and .tab_id == $tab and .workspace_id == $workspace
+    ' >/dev/null 2>&1; then
+    echo 'error: Herdr relaunch pane/tab/workspace disagrees with its recorded endpoint; refusing replacement' >&2
+    return 1
+  fi
+}
+
 # fm_backend_herdr_current_path: the live FOREGROUND process's cwd, or empty on
 # any error. Mirrors tmux's pane_current_path poll used for worktree-path
 # discovery after `treehouse get`.

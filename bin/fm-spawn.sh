@@ -43,6 +43,9 @@
 #   the new incarnation. The replacement still never starts outside the copy
 #   holding the work: a Herdr shell that has drifted out of the recorded
 #   worktree is told once to return, and only a shell that will not go refuses.
+#   A Herdr replacement receives command-local HERDR_PANE_ID, HERDR_TAB_ID,
+#   HERDR_WORKSPACE_ID and HERDR_SESSION from that live-checked record, not
+#   the persistent shell's old selectors; its startup children inherit them.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max|ultra> are concrete profile
@@ -1318,6 +1321,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
     HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
+    fm_backend_herdr_relaunch_identity "$RELAUNCH_META" || exit 1
   fi
   # With no explicit harness, a relaunch reuses the harness already recorded
   # for this task. It must NOT fall through to the fresh-spawn config
@@ -3854,6 +3858,11 @@ case "$HARNESS" in
     LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
     ;;
 esac
+if [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = herdr ]; then
+  # Command-local identity reaches startup children without changing the shell.
+  # Compose before history/trace guards and the optional clean-env wrapper.
+  LAUNCH="HERDR_ENV=1 HERDR_SESSION=$(shell_quote "$HERDR_SES") HERDR_PANE_ID=$(shell_quote "$HERDR_PANE_ID") HERDR_TAB_ID=$(shell_quote "$HERDR_TAB_ID") HERDR_WORKSPACE_ID=$(shell_quote "$HERDR_WORKSPACE_ID") $LAUNCH"
+fi
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
 # back to the default ~/.claude store even when firstmate itself runs under a

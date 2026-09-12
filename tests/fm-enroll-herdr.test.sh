@@ -71,7 +71,11 @@ case "$1 ${2:-}" in
   '--version ') printf 'herdr 0.9.0\n'; exit 0 ;;
   'status --json') printf '{"server":{"running":true,"compatible":true,"version":"0.9.0"}}\n'; exit 0 ;;
   'session list') file=sessions.json ;;
-  'pane get') file=pane.json ;;
+  'pane get')
+    if [ -f "$ENROLL_FIXTURE/pane-get-failed" ]; then cat "$ENROLL_FIXTURE/pane.json"; exit 9; fi
+    file=pane.json ;;
+  'pane current') printf '{"error":{"code":"pane_not_found"}}\n'; exit 1 ;;
+  'tab get') jq '{result:{tab:(.result.pane | {tab_id,workspace_id})}}' "$ENROLL_FIXTURE/pane.json"; exit 0 ;;
   'pane list') file=panes.json ;;
   'pane process-info')
     if [ -f "$ENROLL_FIXTURE/live-agent" ]; then
@@ -238,14 +242,31 @@ case "${1:-}" in
   --help) printf 'pi --model MODEL --thinking LEVEL --session FILE\n'; exit 0 ;;
 esac
 python3 - "$@" <<'PY'
-import json, os, pathlib, sys
+import json, os, pathlib, subprocess, sys
 args=sys.argv[1:]; root=pathlib.Path(os.environ['ENROLL_FIXTURE'])
-assert args[args.index('--session')+1] == str(root/'history.jsonl')
+expected = dict(HERDR_PANE_ID='w2:p1', HERDR_TAB_ID='w2:t1', HERDR_WORKSPACE_ID='w2')
+assert {key: os.environ.get(key) for key in expected} == expected, 'replacement inherited stale pane identity'
+# Startup helpers are child processes of the replacement, not of its old shell.
+child = subprocess.check_output([sys.executable, '-c',
+    'import json,os,sys; print(json.dumps({k:os.environ.get(k) for k in sys.argv[1:]}))', *expected])
+assert {key: json.loads(child).get(key) for key in expected} == expected
 assert args[args.index('--model')+1] == 'cliproxyapi/gpt-6-astra'
 assert args[args.index('--thinking')+1] == 'high'
 assert '--continue' not in args and '--session-id' not in args and '--resume' not in args
-assert os.environ['FM_HOME'] == str(root/'home')
-assert 'Read the native task in full' in args[-1]
+if '--session' in args:
+    assert args[args.index('--session')+1] == str(root/'history.jsonl')
+    assert os.environ['FM_HOME'] == str(root/'home')
+    assert 'Read the native task in full' in args[-1]
+else:
+    assert os.environ['FM_HOME'] == str(root/'worktree')
+    assert str(root/'worktree/.pi/extensions/fm-primary-turnend-guard.ts') in args
+    assert '# retained charter' in args[-1]
+# The actual caller resolver must work without a historical public alias.
+source = (root/'source-root').read_text().strip()
+workspace = subprocess.check_output(['bash', '-c',
+    '. "$1/bin/backends/herdr.sh"; fm_backend_herdr_launcher_identity enroll-test || exit; '
+    'printf "%s" "$FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID"', 'caller', source], text=True)
+assert workspace == 'w2', workspace
 assert json.loads((root/'history.jsonl').read_text())['id'] == 'c2679539-b3bb-4e0d-a724-2a0e276777a3'
 (root/'received-argv.json').write_text(json.dumps(args))
 PY
@@ -257,6 +278,7 @@ fm_test_fake_gh_axi "$FAKEBIN"
 [ ! -e /tmp/fm-retained ] || fail 'reserved test task temporary directory already exists'
 TASK_TMP_CREATED=1
 touch "$TMP_ROOT/allow-launch"
+printf '%s\n' "$ROOT" > "$TMP_ROOT/source-root"
 if ! env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \
   -u FM_BACKEND_HERDR_CLIENT_SESSION -u FM_BACKEND_HERDR_BIN \
   FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH" FM_SPAWN_NO_GUARD=1 \
@@ -266,7 +288,9 @@ if ! env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONF
 fi
 [ -s "$TMP_ROOT/launch" ] || fail 'no actual recovery command captured'
 LAUNCH=$(< "$TMP_ROOT/launch")
-(cd "$TMP_ROOT/worktree"; PATH="$FAKEBIN:$BASE_PATH" bash -c "$LAUNCH") || fail 'received native recovery command failed'
+(cd "$TMP_ROOT/worktree"; HERDR_PANE_ID=w0:p2 HERDR_TAB_ID=w0:t2 HERDR_WORKSPACE_ID=w0 \
+  HERDR_SESSION=enroll-test HERDR_SOCKET_PATH="$TMP_ROOT/api.sock" \
+  PATH="$FAKEBIN:$BASE_PATH" bash -c "$LAUNCH") || fail 'received native recovery command failed'
 [ -s "$TMP_ROOT/received-argv.json" ] || fail 'Pi did not receive the exact history/model/home'
 cmp "$TMP_ROOT/history-before" "$TMP_ROOT/history.jsonl" || fail 'managed recovery replaced prior history'
 grep -q '^herdr_enrollment=' "$META" || fail 'recovery dropped retained identity protection'
@@ -286,3 +310,51 @@ mv "${MESSAGES[0]}" "$HOME_FIXTURE/state/retained.inbox/handled/"
 printf 'note: enrollment inbox proof acknowledged; no source mutation\n' >> "$HOME_FIXTURE/state/retained.status"
 grep -q 'enrollment inbox proof acknowledged' "$HOME_FIXTURE/state/retained.status" || fail 'worker result did not reach ordinary status transport'
 pass 'ordinary fm-send, native inbox acknowledgement and result transport work with the enrolled record'
+
+# Reuse this private endpoint fixture as a moved secondmate, with child state
+# and an enabled clean launch environment. No production enrollment is changed.
+awk -F= '$1 !~ /^(herdr_enrollment|pi_session_file|pi_session_id|kind|mode|home|project)$/' "$META" > "$TMP_ROOT/secondmate.meta"
+printf 'kind=secondmate\nmode=secondmate\nhome=%s\nproject=%s\n' \
+  "$TMP_ROOT/worktree" "$TMP_ROOT/worktree" >> "$TMP_ROOT/secondmate.meta"
+mv "$TMP_ROOT/secondmate.meta" "$META"
+mkdir -p "$TMP_ROOT/worktree"/{data,state,bin}
+printf 'retained\n' > "$TMP_ROOT/worktree/.fm-secondmate-home"
+printf '# Test home\n' > "$TMP_ROOT/worktree/AGENTS.md"
+printf '# retained charter\n' > "$TMP_ROOT/worktree/data/charter.md"
+printf 'window=child-session:fm-child\n' > "$TMP_ROOT/worktree/state/child.meta"
+printf 'ENROLL_FIXTURE\n' > "$HOME_FIXTURE/config/launch-env-allowlist"
+cp "$META" "$TMP_ROOT/secondmate-before"
+cp "$TMP_ROOT/pane.json" "$TMP_ROOT/pane-before"
+for field in pane_id tab_id workspace_id transport; do
+  if [ "$field" = transport ]; then
+    cp "$TMP_ROOT/pane-before" "$TMP_ROOT/pane.json"
+    touch "$TMP_ROOT/pane-get-failed"
+  else
+    jq --arg field "$field" '.result.pane[$field] = "foreign"' "$TMP_ROOT/pane-before" > "$TMP_ROOT/pane.json"
+  fi
+  if env FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH" FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-control.sh" retained relaunch --harness pi > "$OUT" 2>&1; then
+    fail "accepted contradictory live $field"
+  fi
+  grep -q 'disagrees with its recorded endpoint' "$OUT" || { read_result; fail "missing $field refusal"; }
+  cmp "$META" "$TMP_ROOT/secondmate-before" || fail 'refusal changed metadata'
+  [ -f "$TMP_ROOT/live-agent" ] || fail 'refusal stopped the prior agent'
+done
+rm "$TMP_ROOT/pane-get-failed"
+cp "$TMP_ROOT/pane-before" "$TMP_ROOT/pane.json"
+# Model an already-exited agent; the real linked source and child records stay.
+rm "$TMP_ROOT/live-agent"
+if ! env FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH" FM_SPAWN_NO_GUARD=1 \
+  FM_CONTROL_POLL=.01 FM_CONTROL_LAUNCH_WAIT=.1 \
+  "$ROOT/bin/fm-control.sh" retained relaunch --harness pi \
+  --model cliproxyapi/gpt-6-astra --effort high > "$OUT" 2>&1; then
+  read_result; fail 'moved secondmate recovery failed'
+fi
+LAUNCH=$(< "$TMP_ROOT/launch")
+(cd "$TMP_ROOT/worktree"; HERDR_PANE_ID=w0:p2 HERDR_TAB_ID=w0:t2 HERDR_WORKSPACE_ID=w0 \
+  HERDR_SESSION=enroll-test HERDR_SOCKET_PATH="$TMP_ROOT/api.sock" \
+  PATH="$FAKEBIN:$BASE_PATH" bash -c "$LAUNCH") || fail 'secondmate replacement/startup identity failed'
+[ "$(< "$TMP_ROOT/worktree/data/charter.md")" = '# retained charter' ] || fail 'charter changed'
+[ "$(< "$TMP_ROOT/worktree/state/child.meta")" = 'window=child-session:fm-child' ] || fail 'child record changed'
+grep -qx 'children=1' "$HOME_FIXTURE/state/retained.control-relaunch" || fail 'child checkpoint missing'
+pass 'moved secondmate replacement/startup uses current IDs with clean env, preserves children and refuses live identity drift'

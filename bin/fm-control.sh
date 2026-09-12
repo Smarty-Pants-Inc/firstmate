@@ -841,6 +841,10 @@ do_relaunch() {
   local -a spawn_args
 
   require_state_verified_backend relaunch
+  if [ "$BACKEND" = herdr ]; then
+    fm_backend_source herdr || exit 1
+    fm_backend_herdr_relaunch_identity "$META" || exit 1
+  fi
   resolve_relaunch_profile
 
   case "$KIND" in
