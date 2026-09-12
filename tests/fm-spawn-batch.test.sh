@@ -14,6 +14,9 @@ set -u
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-batch)
+FAKEBIN=$(fm_fakebin "$TMP_ROOT/tools")
+fm_fake_exit0 "$FAKEBIN" treehouse
+export PATH="$FAKEBIN:$PATH"
 export FM_BACKEND=tmux
 
 # Clear ambient firstmate overrides so the behavior test owns its environment.

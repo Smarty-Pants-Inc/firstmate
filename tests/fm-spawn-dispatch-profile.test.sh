@@ -1093,8 +1093,11 @@ set -eu
 while [ "$#" -gt 0 ]; do
   case "$1" in -o) shift 2 ;; --) shift; break ;; *) exit 90 ;; esac
 done
-[ "$#" -eq 6 ] && [ "$1" = inherit-host ] && [ "$2" = fm-remote-entrypoint.sh ] && [ "$3" = 1 ] || exit 91
+[ "$#" -eq 6 ] && [ "$1" = inherit-host ] && [ "$3" = 1 ] || exit 91
+# OpenSSH passes this quoted command word through the remote shell.
+entry=$(python3 -c 'import shlex, sys; entry, = shlex.split(sys.argv[1]); print(entry)' "$2") || exit 92
 remote_root=$(printf '%s' "$4" | base64 --decode)
+[ "$entry" = "$remote_root/bin/fm-remote-entrypoint.sh" ] || exit 92
 remote_home=$(printf '%s' "$5" | base64 --decode)
 args=()
 while IFS= read -r -d '' arg; do args+=("$arg"); done < <(printf '%s' "$6" | base64 --decode)

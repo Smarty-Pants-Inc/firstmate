@@ -51,9 +51,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 host=${1:-}
-entry=${2:-}
+# OpenSSH passes this quoted command word through the remote shell.
+entry=$(python3 -c 'import shlex, sys; entry, = shlex.split(sys.argv[1]); print(entry)' "$2") || exit 92
 shift 2 || true
-[ "$entry" = fm-remote-entrypoint.sh ] || exit 92
+remote_root=$(python3 -c 'import base64, sys; print(base64.b64decode(sys.argv[1]).decode())' "$2")
+[ "$entry" = "$remote_root/bin/fm-remote-entrypoint.sh" ] || exit 92
 argv_b64=${4:-}
 cmd=$(python3 -c 'import sys, base64
 raw = base64.b64decode(sys.argv[1])

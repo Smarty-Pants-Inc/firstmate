@@ -1840,11 +1840,12 @@ while [ "$#" -gt 0 ]; do
   case "$1" in -o) shift 2 ;; --) shift; break ;; *) exit 90 ;; esac
 done
 host=$1
-entry=$2
+# OpenSSH passes this quoted command word through the remote shell.
+entry=$(python3 -c 'import shlex, sys; entry, = shlex.split(sys.argv[1]); print(entry)' "$2") || exit 92
 shift 2
 [ "$host" = remote-mac ] || exit 91
-[ "$entry" = fm-remote-entrypoint.sh ] || exit 92
-exec "$FM_FAKE_REMOTE_ENTRYPOINT" "$@"
+[ "$entry" = "$FM_FAKE_REMOTE_ENTRYPOINT" ] || exit 92
+exec "$entry" "$@"
 SH
 chmod +x "$REMOTE_FAKEBIN/fake-ssh"
 remote_on() {
