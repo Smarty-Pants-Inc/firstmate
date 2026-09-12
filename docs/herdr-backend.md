@@ -86,7 +86,7 @@ After Treehouse produces a validated linked worktree, a single-task projection r
 The creation-time directory can still name the canonical project after allocation and never substitutes for a missing or unverified foreground directory.
 The returned workspace, tab, pane, terminal and source directory must remain the expected ones.
 Neither labels nor home directories manufacture a Git relationship, and no second allocator runs.
-Once allocation is submitted, freshening failure, unavailable capability inspection or unverified membership refuses launch and preserves the allocated terminal, shell and presentation journal for reconciliation.
+Retention starts before allocator submission; submission failure, freshening failure, unavailable capability inspection or unverified membership refuses launch and preserves the terminal, shell and presentation journal for reconciliation.
 A retained journal without an authoritative task record refuses another allocation.
 Flat layouts and secondmate homes are not adopted as linked worktrees by this path.
 

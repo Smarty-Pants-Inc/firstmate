@@ -11,22 +11,9 @@
 # normal operation; the unit tests source it directly, so the FM_HOME fallback
 # below keeps that path sane without fm-backend.sh's preamble.
 #
-# Default container shape (D4, decided empirically - see
-# herdr-verification-p2.md "Task container shape", refined by
-# docs/herdr-backend.md "Default task container shape"): ONE herdr workspace PER
-# FIRSTMATE HOME (the primary, and each secondmate, gets its own), ONE herdr TAB
-# per task inside its home's workspace. The default-on presentation projection
-# creates a disposable workspace for a clean fresh task instead unless the home
-# opts out. That
-# workspace is a non-authoritative visual projection containing only the normal
-# task pane. Its random token and mutable label never authorize lookup,
-# adoption, reuse, closure, deletion, task ownership, or endpoint selection.
-# A version 2 journal can participate in replacing only its exact same-identity
-# endpoint after metadata, home, session, workspace, tab, pane, parent, shape,
-# focus, and agent-absence checks all agree under the session lock.
-# Every ambiguous recovered launch uses the default flat home workspace when
-# duplicate-agent risk is independently absent.
-# Target resolution stays parallel to the tmux adapter in both layouts.
+# docs/herdr-backend.md owns task placement, native project membership, and
+# presentation recovery eligibility. Labels and presentation journals alone
+# never authorize endpoint selection or lifecycle mutation.
 # Projected create, move, and cleanup operations capture the named session's
 # exact active workspace and tab. On Herdr 0.7.5, an explicit close that
 # empties a non-focused workspace moves focus to that workspace's neighbor
@@ -45,10 +32,7 @@
 # pane id itself contains a colon; the session is always the FIRST field, the
 # remainder is the whole pane id - fm_backend_herdr_parse_target splits on the
 # first colon only). This is the value stored in a herdr task's meta window=
-# field and is what fm_backend_resolve_selector already returns unchanged for
-# exact task-id, legacy fm-<id>, and explicit backend-target forms (that
-# function has no herdr-specific logic; it just returns meta's window=
-# verbatim).
+# field; docs/configuration.md (Runtime backend) owns selector resolution.
 #
 # Recovery/orphan discovery retains the home-scoped fm-<id> label scan and
 # verifies this home's recorded endpoints outside that workspace after moves.
