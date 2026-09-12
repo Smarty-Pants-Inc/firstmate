@@ -2004,12 +2004,12 @@ SH
 # close removes it. The socket path is case-local so the derived presentation
 # lock never collides with another test or a real fleet session.
 configure_flat_herdr_teardown_case() {  # <case-dir>
-  local case_dir=$1
-  sed -i.bak 's/^window=.*/window=default:wG:pQ/' "$case_dir/state/task-x1.meta"
+  local case_dir=$1 session=${2:-default}
+  sed -i.bak "s/^window=.*/window=$session:wG:pQ/" "$case_dir/state/task-x1.meta"
   rm -f "$case_dir/state/task-x1.meta.bak"
   printf '%s\n' \
     'backend=herdr' \
-    'herdr_session=default' \
+    "herdr_session=$session" \
     'herdr_workspace_id=wG' \
     'herdr_tab_id=wG:tQ' \
     'herdr_pane_id=wG:pQ' >> "$case_dir/state/task-x1.meta"
@@ -2039,7 +2039,7 @@ case "\${1:-} \${2:-}" in
     if [ "\${FM_FAKE_HERDR_SESSION_LIST_GARBAGE:-0}" = 1 ]; then
       printf '%s\n' 'not-json'
     else
-      printf '%s\n' '{"sessions":[{"name":"default","running":true,"socket_path":"$case_dir/herdr.sock"}]}'
+      printf '%s\n' '{"sessions":[{"name":"$session","running":true,"socket_path":"$case_dir/herdr.sock"}]}'
     fi
     ;;
   "pane close")
@@ -2074,6 +2074,7 @@ SH
 
 test_herdr_retained_teardown_retries_own_closed_generation() (
   local case_dir binding pid='' birth channel log closed meta marker rc mutation home nested_home child_meta lock
+  local session close_data close_state control
   [ "$(uname -s)" = Linux ] || return 0
   trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
   retained_bootstrap_preserves() {
@@ -2097,13 +2098,13 @@ test_herdr_retained_teardown_retries_own_closed_generation() (
       || fail "$binding startup retired the unfinished native task"
     [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail "$binding startup repeated endpoint cleanup"
   }
-  for binding in moved enrolled recursive-enrolled recursive-moved secondmate-moved; do
+  for binding in moved enrolled recursive-enrolled recursive-moved secondmate-moved remote-secondmate-moved; do
     case_dir=$(make_case "herdr-retained-retry-$binding")
     configure_secondmate_home "$case_dir" local "$case_dir/parent"
     channel="$case_dir/parent/state/mate-x.status"
     mkdir -p "$channel"
     write_meta "$case_dir" local-only ship
-    if [ "$binding" = secondmate-moved ]; then
+    if [[ "$binding" = *secondmate-moved ]]; then
       write_meta "$case_dir" local-only secondmate
       printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
       tasks-axi add unrelated 'Unrelated work' --kind ship --file "$case_dir/data/backlog.md" >/dev/null
@@ -2113,7 +2114,9 @@ test_herdr_retained_teardown_retries_own_closed_generation() (
     else
       seed_backlog_in_flight "$case_dir"
     fi
-    configure_flat_herdr_teardown_case "$case_dir"
+    session=default
+    [ "$binding" != remote-secondmate-moved ] || session=fm-remote
+    configure_flat_herdr_teardown_case "$case_dir" "$session"
     export FM_HOME="$case_dir/home" FM_FAKE_HERDR_LOG="$case_dir/herdr.log" FM_FAKE_HERDR_CLOSED="$case_dir/closed"
     log=$FM_FAKE_HERDR_LOG; closed=$FM_FAKE_HERDR_CLOSED
     meta="$case_dir/state/task-x1.meta"; marker="$case_dir/state/task-x1.backlog-close"
@@ -2125,9 +2128,9 @@ test_herdr_retained_teardown_retries_own_closed_generation() (
     [ -f "$case_dir/ready" ] || fail 'retained shell did not start'
     birth=$(FM_STATE_OVERRIDE="$case_dir/state" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_pid_identity "$2"' fixture "$ROOT" "$pid")
     export FM_FAKE_HERDR_PID=$pid FM_FAKE_HERDR_WORKSPACES="$case_dir/workspaces.json"
-    python3 - "$case_dir" "$binding" "$pid" "$birth" <<'PY'
+    python3 - "$case_dir" "$binding" "$pid" "$birth" "$session" <<'PY'
 import json, pathlib, sys
-root, binding, pid, birth = sys.argv[1:]
+root, binding, pid, birth, session = sys.argv[1:]
 p = pathlib.Path(root)
 identity = dict(pane='wG:pQ',tab='wG:tQ',workspace='wG',terminal='retained-terminal',cwd=root+'/wt',pid=int(pid),birth=birth)
 workspaces = []
@@ -2140,7 +2143,7 @@ sid='c2679539-b3bb-4e0d-a724-2a0e276777a3'
 with (p/'state/task-x1.meta').open('a') as f:
     f.write('harness=pi\n')
     if binding.endswith('moved'):
-        route=dict(task='task-x1',session='default',socket=root+'/herdr.sock',identity=identity,former=['default:wF:p0'])
+        route=dict(task='task-x1',session=session,socket=root+'/herdr.sock',identity=identity,former=[session+':wF:p0'])
         f.write('herdr_route='+json.dumps(route)+'\n')
     else:
         receipt=dict(schema='fm-herdr-enrollment.v1',home=root+'/home',task='task-x1',project=root+'/project',worktree=root+'/wt',
@@ -2148,19 +2151,43 @@ with (p/'state/task-x1.meta').open('a') as f:
             shell_pid=int(pid),shell_identity=birth,parent_workspace='wH',pi_session_file=root+'/history.jsonl',pi_session_id=sid)
         f.write('herdr_enrollment='+json.dumps(receipt)+'\nherdr_parent_workspace_id=wH\npi_session_file='+root+'/history.jsonl\npi_session_id='+sid+'\n')
 PY
-    if [ "$binding" = secondmate-moved ]; then
+    if [[ "$binding" = *secondmate-moved ]]; then
       mkdir -p "$case_dir/wt/state" "$case_dir/wt/data" "$case_dir/wt/config" "$case_dir/wt/projects"
       printf 'task-x1\n' > "$case_dir/wt/.fm-secondmate-home"
       printf 'home=%s/wt\n' "$case_dir" >> "$meta"
       ln -s "$ROOT/bin" "$case_dir/project/bin"
+      close_state="$case_dir/state"
+      close_data="$case_dir/data"
+      if [ "$binding" = remote-secondmate-moved ]; then
+        close_state="$case_dir/wt/state/parent-route"
+        close_data="$case_dir/wt/data/.parent-route"
+        mkdir -p "$close_state" "$close_data"
+        mv "$meta" "$close_state/task-x1.meta"
+        meta="$close_state/task-x1.meta"
+        marker="$close_state/task-x1.backlog-close"
+        printf 'Fixture remote home\n' > "$case_dir/wt/AGENTS.md"
+        ln -s "$ROOT/bin" "$case_dir/wt/bin"
+        remote_secondmate_control() {
+          FM_HOME="$case_dir/wt" FM_ROOT_OVERRIDE="$case_dir/project" \
+            FM_DATA_OVERRIDE="$case_dir/data" FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=0 \
+            PATH="$case_dir/fakebin:$PATH" "$ROOT/bin/fm-remote-secondmate-control.sh" "$@"
+        }
+        remote_secondmate_control route task-x1 > "$case_dir/route.out" \
+          || fail 'remote retirement fixture has no valid live route'
+        assert_grep 'target=fm-remote:wG:pQ' "$case_dir/route.out" 'remote route selected another endpoint'
+      fi
       retire_secondmate() {
+        if [ "$binding" = remote-secondmate-moved ]; then
+          remote_secondmate_control retire task-x1
+          return
+        fi
         FM_ROOT_OVERRIDE="$case_dir/project" FM_STATE_OVERRIDE="$case_dir/state" \
           FM_DATA_OVERRIDE="$case_dir/data" FM_CONFIG_OVERRIDE="$case_dir/config" \
           FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=0 PATH="$case_dir/fakebin:$PATH" \
           "$TEARDOWN" task-x1
       }
-      printf 'id=task-x1\ndata=%s/data\nspawn_gen=teardown-test-task-x1\ncleanup_incomplete=0\n' \
-        "$case_dir" > "$case_dir/marker-before"
+      printf 'id=task-x1\ndata=%s\nspawn_gen=teardown-test-task-x1\ncleanup_incomplete=0\n' \
+        "$close_data" > "$case_dir/marker-before"
       cp "$meta" "$case_dir/meta-before"
       export FM_FAKE_HERDR_CLOSE_MARKER="$marker" FM_FAKE_HERDR_CLOSE_MARKER_EXPECTED="$case_dir/marker-before"
       add_lock_aware_treehouse "$case_dir"
@@ -2185,34 +2212,57 @@ SH
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       pid=''
-      for mutation in live-lock missing-marker wrong-generation reused-endpoint unreadable-endpoint; do
+      for mutation in live-lock missing-marker wrong-generation foreign-data wrong-identity reused-endpoint unreadable-endpoint; do
         case "$mutation" in
           missing-marker) rm "$marker" ;;
           wrong-generation) sed 's/^spawn_gen=.*/spawn_gen=other-generation/' "$case_dir/marker-before" > "$marker" ;;
+          foreign-data) sed "s|^data=.*|data=$case_dir/wt/data|" "$case_dir/marker-before" > "$marker" ;;
+          wrong-identity) sed 's/^herdr_tab_id=.*/herdr_tab_id=wG:tOther/' "$case_dir/meta-before" > "$meta" ;;
           reused-endpoint) export FM_FAKE_HERDR_REUSED=1 ;;
           unreadable-endpoint) export FM_FAKE_HERDR_PANE_GET_GARBAGE=1 ;;
         esac
         rc=0
         retire_secondmate > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
         [ "$rc" -ne 0 ] || fail "secondmate retirement retry accepted $mutation"
-        cmp "$meta" "$case_dir/meta-before" || fail "secondmate retirement changed metadata on $mutation"
+        if [ "$mutation" = wrong-identity ]; then
+          assert_grep 'herdr_tab_id=wG:tOther' "$meta" 'retirement repaired a conflicting route'
+          cp "$case_dir/meta-before" "$meta"
+        else
+          cmp "$meta" "$case_dir/meta-before" || fail "secondmate retirement changed metadata on $mutation"
+        fi
         cmp "$case_dir/data/backlog.md" "$case_dir/backlog-before" || fail 'secondmate retirement changed backlog work items'
         [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail 'secondmate retirement closed another endpoint'
-        [ -f "$lock" ] && [ ! -e "$case_dir/returned" ] || fail 'secondmate retirement bypassed the live lock'
+        [ ! -e "$case_dir/returned" ] || fail 'secondmate retirement returned an unverified lease'
         unset FM_FAKE_HERDR_REUSED FM_FAKE_HERDR_PANE_GET_GARBAGE
         cp "$case_dir/marker-before" "$marker"
         if [ "$mutation" = live-lock ]; then
           FM_HOME="$FM_HOME" bash -c '
             . "$1/bin/fm-backlog-transition-lib.sh"
-            if fm_backlog_close_marker_replay "$2/state" "$2/state/task-x1.backlog-close" "$2/data"; then exit 1; fi
+            if fm_backlog_close_marker_replay "$2" "$2/task-x1.backlog-close" "$3"; then exit 1; fi
             printf "%s\n" "$FM_BACKLOG_TRANSITION_ERROR"
-          ' fixture "$ROOT" "$case_dir" > "$case_dir/replay.out" || fail 'startup replay accepted unfinished secondmate retirement'
+          ' fixture "$ROOT" "$close_state" "$close_data" > "$case_dir/replay.out" || fail 'startup replay accepted unfinished secondmate retirement'
           assert_grep 'retained endpoint cleanup for task-x1 is incomplete' "$case_dir/replay.out" 'startup replay missed the retained secondmate'
           cmp "$marker" "$case_dir/marker-before" || fail 'startup replay changed the secondmate close receipt'
           cmp "$meta" "$case_dir/meta-before" || fail 'startup replay erased secondmate ownership'
+          assert_grep 'not provably stale' "$case_dir/refused.err" 'retirement retry never reached the retained lease lock'
+          [ -f "$lock" ] || fail 'retirement retry removed a live index lock'
+          rm "$case_dir/fakebin/lsof" "$lock"
         fi
       done
-      rm "$case_dir/fakebin/lsof" "$lock"
+      if [ "$binding" = remote-secondmate-moved ]; then
+        for control in route capture observe; do
+          if remote_secondmate_control "$control" task-x1 > "$case_dir/control.out" 2>&1; then
+            fail "ordinary remote $control accepted a closed endpoint using its retirement receipt"
+          fi
+        done
+        if remote_secondmate_control send task-x1 'Retired endpoint probe' > "$case_dir/control.out" 2>&1 \
+          || remote_secondmate_control key task-x1 Enter > "$case_dir/control.out" 2>&1 \
+          || remote_secondmate_control relaunch task-x1 pi default default > "$case_dir/control.out" 2>&1; then
+          fail 'ordinary remote control accepted an absent retired endpoint'
+        fi
+        [ ! -e "$close_state/task-x1.inbox" ] || fail 'remote send wrote an inbox for the retired endpoint'
+        if grep -Eq '^pane (send-text|send-keys|run|move) ' "$log"; then fail 'ordinary control mutated the retired endpoint'; fi
+      fi
       retire_secondmate > "$case_dir/retry.out" 2> "$case_dir/retry.err" \
         || fail "secondmate retirement retry failed: $(cat "$case_dir/retry.err")"
       [ ! -e "$meta" ] && [ ! -e "$marker" ] || fail 'secondmate retirement left completed close records'
@@ -2220,7 +2270,7 @@ SH
       [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail 'secondmate retirement repeated endpoint closure'
       cmp "$case_dir/data/backlog.md" "$case_dir/backlog-before" || fail 'secondmate retirement invented a backlog task'
       unset FM_FAKE_HERDR_CLOSE_MARKER FM_FAKE_HERDR_CLOSE_MARKER_EXPECTED
-      pass 'moved secondmate retirement retains its exact close receipt across a live lease lock without backlog transitions'
+      pass "$binding retirement retains its exact close receipt across a live lease lock without backlog transitions"
       continue
     fi
     if [[ "$binding" = recursive-* ]]; then
