@@ -446,12 +446,11 @@ remote_control relaunch retained pi cliproxyapi/gpt-6-astra high \
   || { read_result; fail 'moved remote relaunch rejected its owning parent-route record'; }
 remote_control route retained || { read_result; fail 'remote relaunch lost route ownership'; }
 grep -qx 'target=fm-remote:w2:p1' "$OUT" || fail 'remote relaunch changed current selectors'
-mkdir "$TMP_ROOT/foreign-state"
-cp "$REMOTE_STATE/retained.meta" "$TMP_ROOT/foreign-state/retained.meta"
-if env FM_HOME="$REMOTE_HOME" PATH="$FAKEBIN:$BASE_PATH" bash -c '
-  . "$1/bin/fm-backend.sh"
-  fm_backend_validate_task_endpoint "$2" retained
-' fixture "$ROOT" "$TMP_ROOT/foreign-state/retained.meta" > "$OUT" 2>&1; then
-  fail 'copying a moved route to another metadata owner was accepted'
-fi
+env FM_HOME="$REMOTE_HOME" FM_STATE_OVERRIDE="$REMOTE_STATE" \
+  FM_DATA_OVERRIDE="$REMOTE_HOME/data/.parent-route" PATH="$FAKEBIN:$BASE_PATH" \
+  "$ROOT/bin/fm-fleet-snapshot.sh" --json > "$OUT" \
+  || fail 'moved remote fleet snapshot failed'
+jq -e '.tasks[] | select(.id == "retained") | .endpoint |
+  .target == "fm-remote:w2:p1" and .exists == true and .agent_alive == "alive"' "$OUT" >/dev/null \
+  || { read_result; fail 'snapshot copies lost the moved endpoint or its liveness'; }
 pass 'moved remote delivery, control and relaunch share one metadata owner across home contexts'

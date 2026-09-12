@@ -883,6 +883,17 @@ test_herdr_move_and_reconcile() (
   local dir="$TMP_ROOT/herdr-move" out rc
   mkdir -p "$dir/bin" "$dir/home/state" "$dir/home/config"
   export FM_MOVE_FIXTURE="$dir" FM_MOVE_PID=$$
+  export FM_MOVE_REAL_PS
+  FM_MOVE_REAL_PS=$(command -v ps)
+  printf '%s\n' before-wallclock-step > "$dir/ps-start"
+  cat > "$dir/bin/ps" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *' -o lstart= '*) cat "$FM_MOVE_FIXTURE/ps-start" ;;
+  *) exec "$FM_MOVE_REAL_PS" "$@" ;;
+esac
+SH
+  chmod +x "$dir/bin/ps"
   cat > "$dir/bin/herdr" <<'PY'
 #!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -965,6 +976,12 @@ PY
     [ "$(cat "$dir/input")" = "${expected#*:}" ] || fail 'delivery did not reach the current pane'
   }
   assert_move_route lab:w1:p1 lab:w2:p2
+  if [ "$(uname -s)" = Linux ]; then
+    [ "$(ps -p "$FM_MOVE_PID" -o lstart=)" = before-wallclock-step ] || fail 'initial ps clock fixture missing'
+    printf '%s\n' after-wallclock-step > "$dir/ps-start"
+    [ "$(ps -p "$FM_MOVE_PID" -o lstart=)" = after-wallclock-step ] || fail 'ps clock fixture did not drift'
+    assert_move_route work lab:w2:p2
+  fi
   cp "$dir/home/state/work.meta" "$dir/home/state/conflict.meta"
   rc=0
   out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?

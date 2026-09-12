@@ -789,7 +789,10 @@ secondmate_liveness_one() {  # <meta> <id>
   fi
   backend=$(fm_backend_of_meta "$meta")
   target=$(fm_backend_target_of_meta "$meta")
-  [ -n "$target" ] || target="$window"
+  if [ -z "$target" ]; then
+    echo "SECONDMATE_LIVENESS: secondmate $id: skipped: endpoint validation failed; reconcile its retained record before recovery"
+    return 0
+  fi
   agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
   case "$harness" in
     claude|codex|opencode|pi|pi-signed|grok|kimi|omp) ;;

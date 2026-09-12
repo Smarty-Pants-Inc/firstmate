@@ -41,10 +41,14 @@ PY
 
 fm_backend_herdr_move_identity() { # <session> <pane>
   local pane process pid birth
+  if ! declare -F fm_pid_identity >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
+  fi
   pane=$(fm_backend_herdr_cli "$1" pane get "$2") || return 1
   process=$(fm_backend_herdr_cli "$1" pane process-info --pane "$2") || return 1
   pid=$(printf '%s' "$process" | jq -er '.result.process_info.shell_pid | select(type == "number" and . > 0)') || return 1
-  birth=$(LC_ALL=C ps -p "$pid" -o lstart=) || return 1
+  birth=$(fm_pid_identity "$pid") || return 1
   [ -n "$birth" ] || return 1
   printf '%s' "$pane" | jq -ce --arg expected "$2" --argjson pid "$pid" --arg birth "$birth" '
     .result.pane | select(.pane_id == $expected)
@@ -63,13 +67,13 @@ fm_backend_herdr_route_identity() {
   local meta=$1 id=$2 route session identity owner
   route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 1
   session=$(fm_backend_meta_exact_value "$meta" herdr_session) || return 1
-  jq -en --argjson r "$route" --arg metadata "$meta" --arg task "$id" --arg session "$session" \
+  jq -en --argjson r "$route" --arg task "$id" --arg session "$session" \
     --arg socket "$(fm_backend_herdr_presentation_session_socket_path "$session")" \
     --arg window "$(fm_backend_meta_exact_value "$meta" window)" \
     --arg pane "$(fm_backend_meta_exact_value "$meta" herdr_pane_id)" \
     --arg tab "$(fm_backend_meta_exact_value "$meta" herdr_tab_id)" \
     --arg workspace "$(fm_backend_meta_exact_value "$meta" herdr_workspace_id)" '
-    $r.metadata == $metadata and $r.task == $task and $r.session == $session
+    $r.task == $task and $r.session == $session
     and ($socket | length > 0) and $r.socket == $socket
     and $window == ($session + ":" + $r.identity.pane)
     and $r.identity.pane == $pane and $r.identity.tab == $tab and $r.identity.workspace == $workspace
@@ -110,16 +114,16 @@ fm_backend_herdr_move_finish() { # <meta> <task> <pending> <returned-pane>
     and .result.tab.label == $label and .result.tab.pane_count == 1' >/dev/null || return 1
   if grep -q '^herdr_route=' "$meta"; then
     route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 1
-    former=$(jq -cen --argjson r "$route" --argjson pending "$pending" --arg metadata "$meta" '
-      $r | select(.metadata == $metadata and .task == $pending.task and .session == $pending.session
+    former=$(jq -cen --argjson r "$route" --argjson pending "$pending" '
+      $r | select(.task == $pending.task and .session == $pending.session
         and .socket == $pending.socket and .identity == $pending.identity) | .former') || return 1
   fi
   rc=0
   owner=$(fm_backend_meta_for_window "$session:$pane" "${meta%/*}") || rc=$?
   [ "$rc" -ne 2 ] && { [ -z "$owner" ] || [ "$owner" = "$meta" ]; } || return 1
   route=$(jq -cn --argjson pending "$pending" --argjson identity "$identity" \
-    --argjson former "$former" --arg metadata "$meta" '
-    $pending | {metadata:$metadata,task,session,socket,identity:$identity,
+    --argjson former "$former" '
+    $pending | {task,session,socket,identity:$identity,
       former:($former + [(.session + ":" + .identity.pane)] | unique)}') || return 1
   # Keep the old projection journal as evidence, not as a new endpoint owner.
   # Its exact binding no longer matches and therefore cannot authorize reuse.
