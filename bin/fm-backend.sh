@@ -355,7 +355,7 @@ fm_backend_of_meta() {  # <meta-file>
 }
 
 fm_backend_target_of_meta() {  # <meta-file>
-  local meta=$1 backend terminal window id
+  local meta=$1 backend id
   # An uncertain relocation has no usable endpoint until the owning home's
   # reconcile-move verifies its destination. Never route through the old ID.
   [ -z "$(fm_meta_get "$meta" herdr_move)" ] || return 0
@@ -366,6 +366,12 @@ fm_backend_target_of_meta() {  # <meta-file>
     printf '%s' "$FM_BACKEND_VALIDATED_TARGET"
     return 0
   fi
+  fm_backend_recorded_target_of_meta "$meta"
+}
+
+fm_backend_recorded_target_of_meta() {
+  local meta=$1 backend terminal window
+  backend=$(fm_backend_of_meta "$meta")
   if [ "$backend" = orca ]; then
     terminal=$(fm_meta_get "$meta" terminal)
     [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }

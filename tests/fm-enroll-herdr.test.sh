@@ -75,7 +75,7 @@ case "$1 ${2:-}" in
     if [ -f "$ENROLL_FIXTURE/pane-get-failed" ]; then cat "$ENROLL_FIXTURE/pane.json"; exit 9; fi
     file=pane.json ;;
   'pane current') printf '{"error":{"code":"pane_not_found"}}\n'; exit 1 ;;
-  'tab get') jq '{result:{tab:(.result.pane | {tab_id,workspace_id})}}' "$ENROLL_FIXTURE/pane.json"; exit 0 ;;
+  'tab get') jq '{result:{tab:(.result.pane | {tab_id,workspace_id,label:"fm-retained",pane_count:1})}}' "$ENROLL_FIXTURE/pane.json"; exit 0 ;;
   'pane list') file=panes.json ;;
   'pane process-info')
     if [ -f "$ENROLL_FIXTURE/live-agent" ]; then
@@ -410,3 +410,48 @@ LAUNCH=$(< "$TMP_ROOT/launch")
 [ "$(< "$TMP_ROOT/worktree/state/child.meta")" = 'window=child-session:fm-child' ] || fail 'child record changed'
 grep -qx 'children=1' "$HOME_FIXTURE/state/retained.control-relaunch" || fail 'child checkpoint missing'
 pass 'moved secondmate replacement/startup uses current IDs with clean env, preserves children and refuses live identity drift'
+
+REMOTE_HOME="$TMP_ROOT/worktree"
+REMOTE_STATE="$REMOTE_HOME/state/parent-route"
+mkdir -p "$REMOTE_STATE" "$REMOTE_HOME/config"
+cp "$META" "$REMOTE_STATE/retained.meta"
+jq '.sessions[0].name = "fm-remote"' "$TMP_ROOT/sessions.json" > "$TMP_ROOT/remote-sessions.json"
+mv "$TMP_ROOT/remote-sessions.json" "$TMP_ROOT/sessions.json"
+env FM_HOME="$REMOTE_HOME" PATH="$FAKEBIN:$BASE_PATH" bash -c '
+  . "$1/bin/fm-backend.sh"
+  fm_backend_source herdr
+  . "$1/bin/backends/herdr-pane-move.sh"
+  identity=$(fm_backend_herdr_move_identity fm-remote w2:p1) || exit 1
+  pending=$(jq -cn --argjson identity "$identity" --arg socket "$3/api.sock" \
+    "{task:\"retained\",session:\"fm-remote\",socket:\$socket,destination:\"w2\",identity:(\$identity | .pane=\"w1:p7\" | .tab=\"w1:t7\" | .workspace=\"w1\")}") || exit 1
+  changes=$(jq -cn --arg pending "$pending" \
+    "{herdr_move:\$pending,window:\"fm-remote:w1:p7\",herdr_session:\"fm-remote\",herdr_workspace_id:\"w1\",herdr_tab_id:\"w1:t7\",herdr_pane_id:\"w1:p7\"}") || exit 1
+  fm_backend_herdr_move_meta "$2" "$changes"
+' fixture "$ROOT" "$REMOTE_STATE/retained.meta" "$TMP_ROOT" || fail 'remote pending-move fixture failed'
+env FM_HOME="$REMOTE_HOME" FM_STATE_OVERRIDE="$REMOTE_STATE" PATH="$FAKEBIN:$BASE_PATH" \
+  "$ROOT/bin/fm-control.sh" retained reconcile-move > "$OUT" 2>&1 \
+  || { read_result; fail 'remote parent-route move reconciliation failed'; }
+remote_control() {
+  env FM_HOME="$REMOTE_HOME" PATH="$FAKEBIN:$BASE_PATH" FM_SPAWN_NO_GUARD=1 \
+    FM_CONTROL_POLL=.01 FM_CONTROL_LAUNCH_WAIT=.1 \
+    "$ROOT/bin/fm-remote-secondmate-control.sh" "$@" > "$OUT" 2>&1
+}
+remote_control route retained || { read_result; fail 'moved remote route failed'; }
+grep -qx 'target=fm-remote:w2:p1' "$OUT" || fail 'remote route lost current selectors'
+remote_control send retained 'Retained remote delivery.' || { read_result; fail 'moved remote send failed'; }
+[ -f "$REMOTE_STATE/retained.inbox/001.msg" ] || fail 'remote steer did not reach its parent-route inbox'
+remote_control key retained Enter || { read_result; fail 'moved remote key failed'; }
+rm "$TMP_ROOT/live-agent"
+remote_control relaunch retained pi cliproxyapi/gpt-6-astra high \
+  || { read_result; fail 'moved remote relaunch rejected its owning parent-route record'; }
+remote_control route retained || { read_result; fail 'remote relaunch lost route ownership'; }
+grep -qx 'target=fm-remote:w2:p1' "$OUT" || fail 'remote relaunch changed current selectors'
+mkdir "$TMP_ROOT/foreign-state"
+cp "$REMOTE_STATE/retained.meta" "$TMP_ROOT/foreign-state/retained.meta"
+if env FM_HOME="$REMOTE_HOME" PATH="$FAKEBIN:$BASE_PATH" bash -c '
+  . "$1/bin/fm-backend.sh"
+  fm_backend_validate_task_endpoint "$2" retained
+' fixture "$ROOT" "$TMP_ROOT/foreign-state/retained.meta" > "$OUT" 2>&1; then
+  fail 'copying a moved route to another metadata owner was accepted'
+fi
+pass 'moved remote delivery, control and relaunch share one metadata owner across home contexts'

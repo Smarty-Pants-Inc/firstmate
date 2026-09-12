@@ -63,13 +63,13 @@ fm_backend_herdr_route_identity() {
   local meta=$1 id=$2 route session identity owner
   route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 1
   session=$(fm_backend_meta_exact_value "$meta" herdr_session) || return 1
-  jq -en --argjson r "$route" --arg home "$FM_HOME" --arg task "$id" --arg session "$session" \
+  jq -en --argjson r "$route" --arg metadata "$meta" --arg task "$id" --arg session "$session" \
     --arg socket "$(fm_backend_herdr_presentation_session_socket_path "$session")" \
     --arg window "$(fm_backend_meta_exact_value "$meta" window)" \
     --arg pane "$(fm_backend_meta_exact_value "$meta" herdr_pane_id)" \
     --arg tab "$(fm_backend_meta_exact_value "$meta" herdr_tab_id)" \
     --arg workspace "$(fm_backend_meta_exact_value "$meta" herdr_workspace_id)" '
-    $r.home == $home and $r.task == $task and $r.session == $session
+    $r.metadata == $metadata and $r.task == $task and $r.session == $session
     and ($socket | length > 0) and $r.socket == $socket
     and $window == ($session + ":" + $r.identity.pane)
     and $r.identity.pane == $pane and $r.identity.tab == $tab and $r.identity.workspace == $workspace
@@ -110,16 +110,16 @@ fm_backend_herdr_move_finish() { # <meta> <task> <pending> <returned-pane>
     and .result.tab.label == $label and .result.tab.pane_count == 1' >/dev/null || return 1
   if grep -q '^herdr_route=' "$meta"; then
     route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 1
-    former=$(jq -cen --argjson r "$route" --argjson pending "$pending" --arg home "$FM_HOME" '
-      $r | select(.home == $home and .task == $pending.task and .session == $pending.session
+    former=$(jq -cen --argjson r "$route" --argjson pending "$pending" --arg metadata "$meta" '
+      $r | select(.metadata == $metadata and .task == $pending.task and .session == $pending.session
         and .socket == $pending.socket and .identity == $pending.identity) | .former') || return 1
   fi
   rc=0
   owner=$(fm_backend_meta_for_window "$session:$pane" "${meta%/*}") || rc=$?
   [ "$rc" -ne 2 ] && { [ -z "$owner" ] || [ "$owner" = "$meta" ]; } || return 1
   route=$(jq -cn --argjson pending "$pending" --argjson identity "$identity" \
-    --argjson former "$former" --arg home "$FM_HOME" '
-    $pending | {home:$home,task,session,socket,identity:$identity,
+    --argjson former "$former" --arg metadata "$meta" '
+    $pending | {metadata:$metadata,task,session,socket,identity:$identity,
       former:($former + [(.session + ":" + .identity.pane)] | unique)}') || return 1
   # Keep the old projection journal as evidence, not as a new endpoint owner.
   # Its exact binding no longer matches and therefore cannot authorize reuse.

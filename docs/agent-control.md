@@ -58,7 +58,7 @@ This does not add a picker, recent-session fallback, or a general `resume` verb.
 `move` relocates a recorded Herdr terminal into a new tab in an existing workspace without restarting its agent or changing its source directory or home.
 The owning home's control and metadata locks and the named session's presentation lock serialize Firstmate participants.
 `bin/backends/herdr-pane-move.sh` owns the durable pending-move field, native request, process-identity proof, and endpoint replacement; `bin/fm-control.sh --help` owns the command syntax.
-Completed moves retain former selectors in the owning task's metadata and route them through its verified current terminal, process, and session binding.
+Completed moves retain former selectors bound to the owning metadata location and route them through the verified current terminal, process, and session binding.
 Duplicate task claims, reused former selectors, or changed endpoint identities refuse delivery.
 The pending field makes ordinary endpoint consumers refuse until `reconcile-move` verifies the recorded terminal at the recorded destination.
 Reconciliation never repeats a move or assumes an absent response means no change.
