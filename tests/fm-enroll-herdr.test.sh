@@ -217,6 +217,21 @@ tasks-axi show retained --file "$HOME_FIXTURE/data/backlog.md" | grep -q '^  sta
 cp "$META" "$TMP_ROOT/meta-before"
 if run_enroll; then fail 'duplicate enrollment accepted'; fi
 cmp "$TMP_ROOT/meta-before" "$META" || fail 'duplicate enrollment altered metadata'
+(
+  export FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH"
+  unset FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND_HERDR_CLIENT_SESSION FM_BACKEND_HERDR_BIN
+  . "$ROOT/bin/fm-backend.sh"
+  fm_backend_source herdr
+  . "$ROOT/bin/backends/herdr-enroll.sh"
+  receipt=$(cat "$TMP_ROOT/expect.json")
+  fm_backend_herdr_enrollment_identity "$receipt" || exit 1
+  uname() { printf '%s\n' "$platform"; }
+  lsof() { printf 'n%s\n' "$TMP_ROOT/worktree"; }
+  for platform in Darwin FreeBSD; do
+    if fm_backend_herdr_enrollment_identity "$receipt"; then exit 1; fi
+  done
+) || fail 'retained identity must support Linux and refuse unsupported platforms'
+pass 'retained identity refuses Darwin and other unsupported platforms'
 # Native consumer validates the receipt instead of trusting a mutable label.
 (
   export FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH"
@@ -296,6 +311,7 @@ cmp "$TMP_ROOT/history-before" "$TMP_ROOT/history.jsonl" || fail 'managed recove
 grep -q '^herdr_enrollment=' "$META" || fail 'recovery dropped retained identity protection'
 grep -q '^pi_session_file=' "$META" || fail 'recovery dropped exact history binding'
 pass 'managed control recovery opens the exact stopped Pi history with original endpoint and explicit model/effort/home'
+: > "$TMP_ROOT/api-calls"
 if ! env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \
   -u FM_BACKEND_HERDR_CLIENT_SESSION -u FM_BACKEND_HERDR_BIN \
   FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH" \
@@ -306,6 +322,42 @@ MESSAGES=("$HOME_FIXTURE/state/retained.inbox/"*.msg)
 [ "${#MESSAGES[@]}" = 1 ] || fail 'ordinary send did not create exactly one durable message'
 [ -f "${MESSAGES[0]}" ] || fail 'ordinary send did not create a durable message'
 grep -q 'Enrollment inbox proof' "${MESSAGES[0]}" || fail 'durable inbox lost the instruction'
+grep -q 'pane send-text.*Firstmate instruction waiting' "$TMP_ROOT/api-calls" || fail 'valid enrolled delivery did not ring its doorbell'
+for spec in \
+  'pane.json|.result.pane.terminal_id = "replacement"' \
+  'pane.json|.result.pane.tab_id = "w2:t9"' \
+  'process.json|.result.process_info.shell_pid = 1'; do
+  file=${spec%%|*}; expression=${spec#*|}
+  cp "$TMP_ROOT/$file" "$TMP_ROOT/saved-delivery"
+  jq "$expression" "$TMP_ROOT/saved-delivery" > "$TMP_ROOT/$file"
+  : > "$TMP_ROOT/api-calls"
+  for selector in retained enroll-test:w2:p1; do
+    if env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \
+      -u FM_BACKEND_HERDR_CLIENT_SESSION -u FM_BACKEND_HERDR_BIN \
+      FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH" \
+      "$ROOT/bin/fm-send.sh" "$selector" 'Refuse replacement delivery.' > "$OUT" 2>&1; then
+      fail "changed enrolled identity accepted delivery through $selector"
+    fi
+  done
+  if ! env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \
+    -u FM_BACKEND_HERDR_CLIENT_SESSION -u FM_BACKEND_HERDR_BIN \
+    FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH" bash -c '
+      . "$1/bin/fm-task-inbox-lib.sh"
+      [ -z "$(fm_backend_target_of_meta "$2")" ] || exit 1
+      rc=0
+      fm_task_inbox_ring herdr enroll-test:w2:p1 "$3" fm-retained || rc=$?
+      [ "$rc" = 3 ]
+    ' retry "$ROOT" "$META" "${MESSAGES[0]}" > "$OUT" 2>&1; then
+    read_result; fail 'doorbell retry did not refuse the changed enrolled identity'
+  fi
+  if grep -Eq '^pane (send-text|send-keys|run) ' "$TMP_ROOT/api-calls"; then
+    fail 'changed enrolled identity received terminal input'
+  fi
+  [ ! -f "$HOME_FIXTURE/state/retained.inbox/002.msg" ] || fail 'changed enrolled identity enqueued another instruction'
+  [ -f "${MESSAGES[0]}" ] || fail 'refused retry lost its durable instruction'
+  mv "$TMP_ROOT/saved-delivery" "$TMP_ROOT/$file"
+done
+pass 'delivery and doorbell retries refuse reused enrolled terminal, tab and process identities'
 mv "${MESSAGES[0]}" "$HOME_FIXTURE/state/retained.inbox/handled/"
 printf 'note: enrollment inbox proof acknowledged; no source mutation\n' >> "$HOME_FIXTURE/state/retained.status"
 grep -q 'enrollment inbox proof acknowledged' "$HOME_FIXTURE/state/retained.status" || fail 'worker result did not reach ordinary status transport'

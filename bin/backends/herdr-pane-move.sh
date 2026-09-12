@@ -59,8 +59,43 @@ fm_backend_herdr_move_same_process() { # <recorded identity> <current identity>
     ($before | {terminal,cwd,pid,birth}) == ($after | {terminal,cwd,pid,birth})' >/dev/null
 }
 
+fm_backend_herdr_route_identity() {
+  local meta=$1 id=$2 route session identity owner
+  route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 1
+  session=$(fm_backend_meta_exact_value "$meta" herdr_session) || return 1
+  jq -en --argjson r "$route" --arg home "$FM_HOME" --arg task "$id" --arg session "$session" \
+    --arg socket "$(fm_backend_herdr_presentation_session_socket_path "$session")" \
+    --arg window "$(fm_backend_meta_exact_value "$meta" window)" \
+    --arg pane "$(fm_backend_meta_exact_value "$meta" herdr_pane_id)" \
+    --arg tab "$(fm_backend_meta_exact_value "$meta" herdr_tab_id)" \
+    --arg workspace "$(fm_backend_meta_exact_value "$meta" herdr_workspace_id)" '
+    $r.home == $home and $r.task == $task and $r.session == $session
+    and ($socket | length > 0) and $r.socket == $socket
+    and $window == ($session + ":" + $r.identity.pane)
+    and $r.identity.pane == $pane and $r.identity.tab == $tab and $r.identity.workspace == $workspace
+    and ($r.former | type == "array" and length > 0 and all(.[]; type == "string"))' >/dev/null || return 1
+  identity=$(fm_backend_herdr_move_identity "$session" "$(printf '%s' "$route" | jq -r .identity.pane)") || return 1
+  jq -en --argjson r "$route" --argjson now "$identity" '$r.identity == $now' >/dev/null || return 1
+  owner=$(fm_backend_meta_for_window "$session:$(printf '%s' "$identity" | jq -r .pane)" "${meta%/*}") || return 1
+  [ "$owner" = "$meta" ]
+}
+
+fm_backend_herdr_route_selector() {
+  local meta=$1 target=$2 id route previous session
+  id=${meta##*/}
+  fm_backend_validate_task_endpoint "$meta" "${id%.meta}" || return 1
+  route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 1
+  session=$(printf '%s' "$route" | jq -er .session) || return 1
+  [ "${target%%:*}" = "$session" ] || return 1
+  previous=$(fm_backend_herdr_cli "$session" pane get "${target#*:}") || true
+  printf '%s' "$previous" | jq -e --argjson r "$route" '
+    .error.code == "pane_not_found" or
+    (.result.pane | .pane_id == $r.identity.pane and .tab_id == $r.identity.tab
+      and .workspace_id == $r.identity.workspace and .terminal_id == $r.identity.terminal)' >/dev/null
+}
+
 fm_backend_herdr_move_finish() { # <meta> <task> <pending> <returned-pane>
-  local meta=$1 id=$2 pending=$3 pane=$4 session identity before tab current
+  local meta=$1 id=$2 pending=$3 pane=$4 session identity before tab current route former='[]' owner rc
   session=$(printf '%s' "$pending" | jq -er .session) || return 1
   before=$(printf '%s' "$pending" | jq -ce .identity) || return 1
   identity=$(fm_backend_herdr_move_identity "$session" "$pane") || return 1
@@ -73,12 +108,25 @@ fm_backend_herdr_move_finish() { # <meta> <task> <pending> <returned-pane>
     --arg workspace "$(printf '%s' "$identity" | jq -r .workspace)" '
     .result.tab.tab_id == $tab and .result.tab.workspace_id == $workspace
     and .result.tab.label == $label and .result.tab.pane_count == 1' >/dev/null || return 1
+  if grep -q '^herdr_route=' "$meta"; then
+    route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 1
+    former=$(jq -cen --argjson r "$route" --argjson pending "$pending" --arg home "$FM_HOME" '
+      $r | select(.home == $home and .task == $pending.task and .session == $pending.session
+        and .socket == $pending.socket and .identity == $pending.identity) | .former') || return 1
+  fi
+  rc=0
+  owner=$(fm_backend_meta_for_window "$session:$pane" "${meta%/*}") || rc=$?
+  [ "$rc" -ne 2 ] && { [ -z "$owner" ] || [ "$owner" = "$meta" ]; } || return 1
+  route=$(jq -cn --argjson pending "$pending" --argjson identity "$identity" \
+    --argjson former "$former" --arg home "$FM_HOME" '
+    $pending | {home:$home,task,session,socket,identity:$identity,
+      former:($former + [(.session + ":" + .identity.pane)] | unique)}') || return 1
   # Keep the old projection journal as evidence, not as a new endpoint owner.
   # Its exact binding no longer matches and therefore cannot authorize reuse.
-  fm_backend_herdr_move_meta "$meta" "$(jq -cn --argjson identity "$identity" --arg session "$session" '
+  fm_backend_herdr_move_meta "$meta" "$(jq -cn --argjson identity "$identity" --arg session "$session" --arg route "$route" '
     {window: ($session + ":" + $identity.pane), herdr_session: $session,
      herdr_workspace_id: $identity.workspace, herdr_tab_id: $identity.tab,
-     herdr_pane_id: $identity.pane, herdr_move: null}')" || return 1
+     herdr_pane_id: $identity.pane, herdr_route: $route, herdr_move: null}')" || return 1
   printf '%s:%s\n' "$session" "$pane"
 }
 
@@ -125,6 +173,7 @@ fm_backend_herdr_move_task_locked() { # <meta> <task> <destination> <expected-ta
   [ "$FM_BACKEND_VALIDATED_BACKEND" = herdr ] && [ "$FM_BACKEND_VALIDATED_TARGET" = "$expected" ] || {
     echo 'error: expected Herdr endpoint changed; no move attempted' >&2; return 1;
   }
+  [ "$(fm_backend_meta_for_window "$expected" "${meta%/*}")" = "$meta" ] || return 1
   if [ "$(fm_meta_get "$meta" kind)" = secondmate ]; then
     local home
     home=$(fm_backend_meta_exact_value "$meta" home) || return 1

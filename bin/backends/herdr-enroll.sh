@@ -17,11 +17,8 @@ fm_backend_herdr_enrollment_identity() { # <receipt JSON>
     $now.result.pane as $p | $p.pane_id == $expected.pane and $p.tab_id == $expected.tab
     and $p.workspace_id == $expected.workspace and $p.terminal_id == $expected.terminal
     and $pid == $expected.shell_pid and $birth == $expected.shell_identity' >/dev/null || return 1
-  # Local kernel cwd, not reported terminal metadata. Linux and macOS are the
-  # currently supported local enrollment platforms; unknown platforms refuse.
   case "$(uname -s)" in
     Linux) cwd=$(readlink "/proc/$pid/cwd") || return 1 ;;
-    Darwin) cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | awk '/^n/{print substr($0,2)}') || return 1 ;;
     *) return 1 ;;
   esac
   actual=$(CDPATH='' cd -- "$cwd" 2>/dev/null && pwd -P) || return 1

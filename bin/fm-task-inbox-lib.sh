@@ -283,7 +283,14 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # verdicts would starve a harness whose idle screen the classifier cannot
 # positively identify (that classifier is advisory here by design).
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
-  local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
+  local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict meta current
+  if [ "$backend" = herdr ]; then
+    meta=${rec%/*}
+    meta="${meta%.inbox}.meta"
+    [ -f "$meta" ] && [ "$(fm_backend_of_meta "$meta")" = "$backend" ] || return 3
+    current=$(fm_backend_target_of_meta "$meta")
+    [ -n "$current" ] && [ "$current" = "$target" ] || return 3
+  fi
   case "$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || true)" in
     dead|missing) return 3 ;;
   esac

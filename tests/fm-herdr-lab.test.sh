@@ -123,6 +123,7 @@ test_provision_run_and_guarded_teardown() {
   assert_present "$TRIPWIRES/$name.fleet-state.json" "provision did not record the fleet-state tripwire"
 
   run_with_fake fm_herdr_lab_cli "$name" workspace list >/dev/null || fail "safe run command failed"
+  run_with_fake fm_herdr_lab_cli "$name" pane close w2:p1 >/dev/null || fail "guarded lab mutation failed"
   run_with_fake fm_herdr_lab_cli "$name" server >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "bare server start outside provision must be refused"
   status=0
@@ -179,6 +180,10 @@ test_missing_tripwire_blocks_destruction() {
   expect_code 1 "$status" "missing tripwire must refuse teardown"
   after=$(wc -l < "$FAKE_LOG")
   [ "$before" = "$after" ] || fail "missing tripwire reached Herdr instead of refusing before destructive calls"
+  status=0
+  run_with_fake fm_herdr_lab_cli "$name" pane close w2:p1 >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "missing tripwire must refuse lab run"
+  [ ! -s "$FAKE_LOG" ] || fail "missing tripwire reached lab run mutation"
   pass "fm-herdr-lab: missing tripwire refuses teardown before any Herdr call"
 }
 
@@ -189,6 +194,10 @@ test_changed_default_blocks_teardown() {
   printf '%s\n' '/changed/default.sock' > "$FAKE_STATE/default-socket"
   run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "changed default fleet state must fail teardown"
+  status=0
+  run_with_fake fm_herdr_lab_cli "$name" pane close w2:p1 >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "changed default fleet state must fail lab run"
+  if grep -q '^pane close ' "$FAKE_LOG"; then fail "changed default allowed lab run mutation"; fi
   [ "$(cat "$FAKE_STATE/$name")" = running ] || fail "changed default allowed a destructive call"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "failed tripwire should retain evidence"
   printf '%s\n' '/home/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
@@ -314,6 +323,11 @@ test_named_fleet_drift_and_ambiguity() {
       fi
       assert_present "$TRIPWIRES/$name.fleet-state.json" "$variant lost retained tripwire"
     done
+    : > "$FAKE_LOG"
+    status=0
+    run_with_fake fm_herdr_lab_cli "$name" pane close w2:p1 >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "$variant must refuse lab run mutation"
+    if grep -q '^pane close ' "$FAKE_LOG"; then fail "$variant reached lab run mutation"; fi
     rm -f "$FAKE_STATE/list-fails"
   done
   printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"

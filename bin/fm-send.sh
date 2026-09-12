@@ -324,7 +324,7 @@ fm_send_count_colons() {  # <string>
 }
 
 fm_send_resolve_target() {  # <raw-target>
-  local raw=$1 meta pane_meta target backend assumed colons id session hint
+  local raw=$1 meta pane_meta target backend assumed colons id session hint rc
 
   RESOLVED_TARGET=""
   TARGET_BACKEND=""
@@ -389,7 +389,9 @@ fm_send_resolve_target() {  # <raw-target>
     return 1
   fi
 
-  meta=$(fm_backend_meta_for_window "$raw" "$STATE" 2>/dev/null || true)
+  rc=0
+  meta=$(fm_backend_meta_for_window "$raw" "$STATE") || rc=$?
+  [ "$rc" -ne 2 ] || return 1
   if [ -n "$meta" ]; then
     target=$(fm_backend_target_of_meta "$meta")
     if [ -z "$target" ]; then

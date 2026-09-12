@@ -355,11 +355,17 @@ fm_backend_of_meta() {  # <meta-file>
 }
 
 fm_backend_target_of_meta() {  # <meta-file>
-  local meta=$1 backend terminal window
+  local meta=$1 backend terminal window id
   # An uncertain relocation has no usable endpoint until the owning home's
   # reconcile-move verifies its destination. Never route through the old ID.
   [ -z "$(fm_meta_get "$meta" herdr_move)" ] || return 0
   backend=$(fm_backend_of_meta "$meta")
+  if [ "$backend" = herdr ] && grep -Eq '^herdr_(enrollment|route)=' "$meta"; then
+    id=${meta##*/}
+    fm_backend_validate_task_endpoint "$meta" "${id%.meta}" || return 0
+    printf '%s' "$FM_BACKEND_VALIDATED_TARGET"
+    return 0
+  fi
   if [ "$backend" = orca ]; then
     terminal=$(fm_meta_get "$meta" terminal)
     [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
@@ -508,6 +514,15 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
           return 1
         fi
       fi
+      if grep -q '^herdr_route=' "$meta"; then
+        fm_backend_source herdr || return 1
+        # shellcheck source=bin/backends/herdr-pane-move.sh
+        . "$FM_BACKEND_LIB_DIR/backends/herdr-pane-move.sh"
+        fm_backend_herdr_route_identity "$meta" "$id" || {
+          echo "REFUSED: task $id no longer has its recorded moved endpoint identity." >&2
+          return 1
+        }
+      fi
       ;;
     zellij)
       [ "$binding" = "$id" ] || {
@@ -571,16 +586,42 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
 }
 
 fm_backend_meta_for_window() {  # <target> <state-dir>
-  local target=$1 state=$2 meta window terminal
+  local target=$1 state=$2 meta window terminal route matched= found= herdr= former=
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
     window=$(fm_meta_get "$meta" window)
     terminal=$(fm_meta_get "$meta" terminal)
-    { [ -n "$window" ] && [ "$window" = "$target" ]; } || { [ -n "$terminal" ] && [ "$terminal" = "$target" ]; } || continue
-    printf '%s' "$meta"
-    return 0
+    matched=
+    if { [ -n "$window" ] && [ "$window" = "$target" ]; } || { [ -n "$terminal" ] && [ "$terminal" = "$target" ]; }; then
+      matched=1
+    fi
+    if [ "$(fm_backend_of_meta "$meta")" = herdr ] && grep -q '^herdr_route=' "$meta"; then
+      route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 2
+      printf '%s' "$route" | jq -e '.former | type == "array"' >/dev/null 2>&1 || return 2
+      if printf '%s' "$route" | jq -e --arg target "$target" '.former | index($target) != null' >/dev/null; then
+        matched=1
+        [ "$window" = "$target" ] || former=$meta
+      fi
+    fi
+    [ -n "$matched" ] || continue
+    [ "$(fm_backend_of_meta "$meta")" != herdr ] || herdr=1
+    if [ -n "$found" ] && [ -n "$herdr" ]; then
+      echo "REFUSED: ambiguous Herdr selector '$target' has multiple task claims." >&2
+      return 2
+    fi
+    [ -n "$found" ] || found=$meta
   done
-  return 1
+  [ -n "$found" ] || return 1
+  if [ -n "$former" ]; then
+    fm_backend_source herdr || return 2
+    # shellcheck source=bin/backends/herdr-pane-move.sh
+    . "$FM_BACKEND_LIB_DIR/backends/herdr-pane-move.sh"
+    fm_backend_herdr_route_selector "$found" "$target" || {
+      echo "REFUSED: former Herdr selector '$target' no longer has an exact task binding." >&2
+      return 2
+    }
+  fi
+  printf '%s' "$found"
 }
 
 fm_backend_task_id_for_selector() {  # <raw-target> <state-dir>
@@ -690,9 +731,18 @@ fm_backend_source() {  # <name>
 #                      metadata, then treated as an ad hoc bare window name and
 #                      resolved by searching the legacy tmux live inventory.
 fm_backend_resolve_selector() {  # <raw-target> <state-dir>
-  local raw=$1 state=$2 meta window
+  local raw=$1 state=$2 meta window rc
   case "$raw" in
     *:*)
+      rc=0
+      meta=$(fm_backend_meta_for_window "$raw" "$state") || rc=$?
+      [ "$rc" -ne 2 ] || return 1
+      if [ -n "$meta" ]; then
+        window=$(fm_backend_target_of_meta "$meta")
+        [ -n "$window" ] || return 1
+        printf '%s' "$window"
+        return 0
+      fi
       printf '%s' "$raw"
       return 0
       ;;
@@ -710,7 +760,9 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
       return 1
       ;;
     *)
-      meta=$(fm_backend_meta_for_window "$raw" "$state" 2>/dev/null || true)
+      rc=0
+      meta=$(fm_backend_meta_for_window "$raw" "$state") || rc=$?
+      [ "$rc" -ne 2 ] || return 1
       if [ -n "$meta" ]; then
         window=$(fm_backend_target_of_meta "$meta")
         [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }

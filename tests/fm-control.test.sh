@@ -899,8 +899,16 @@ result = {}
 if a[:2] == ['session', 'list']:
     print(json.dumps(dict(sessions=[dict(name='lab',running=True,socket_path=str(root/'lab.sock'))])))
     sys.exit()
+if a[:2] == ['status', '--json']:
+    print(json.dumps(dict(server=dict(running=True))))
+    sys.exit()
 if a[:2] == ['pane', 'get']:
-    if a[2] != state['pane']: sys.exit(1)
+    if a[2] != state['pane']:
+        if (root/'reuse-former').exists():
+            print(json.dumps(dict(result=dict(pane=dict(pane_id=a[2],terminal_id='foreign-terminal')))))
+        else:
+            print(json.dumps(dict(error=dict(code='pane_not_found'))))
+        sys.exit(1)
     result = dict(pane=pane())
 elif a[:2] == ['pane', 'process-info']:
     result = dict(process_info=dict(shell_pid=int(os.environ['FM_MOVE_PID'])))
@@ -920,6 +928,9 @@ elif a[:2] == ['pane', 'move']:
     p.write_text(json.dumps(state))
     if (root/'lose-response').exists(): sys.exit(1)
     result = dict(move_result=dict(previous_pane_id=old,pane=pane()))
+elif a[:2] == ['pane', 'send-keys']:
+    assert a[2] == state['pane'], 'input reached an obsolete endpoint'
+    with (root/'input').open('a') as f: f.write(a[2]+'\n')
 else:
     raise SystemExit('unexpected fixture call: '+repr(a))
 print(json.dumps(dict(result=result)))
@@ -944,11 +955,36 @@ PY
   out=$("$CONTROL" work move --workspace w2 --expected-window lab:w1:p1 2>&1) || fail "move failed: $out"
   grep -qx 'window=lab:w2:p2' "$dir/home/state/work.meta" || fail 'returned move endpoint was not recorded'
   grep -qx 'pr=preserve-this' "$dir/home/state/work.meta" || fail 'move lost unrelated metadata'
+  assert_move_route() {
+    local selector=$1 expected=$2 resolved
+    resolved=$(bash -c '. "$1/bin/fm-backend.sh"; fm_backend_resolve_selector "$2" "$FM_HOME/state"' \
+      route "$ROOT" "$selector") || fail "shared routing refused $selector"
+    [ "$resolved" = "$expected" ] || fail "wrong shared route: $resolved"
+    : > "$dir/input"
+    "$SEND" "$selector" --key Enter >/dev/null 2>&1 || fail "fm-send refused $selector"
+    [ "$(cat "$dir/input")" = "${expected#*:}" ] || fail 'delivery did not reach the current pane'
+  }
+  assert_move_route lab:w1:p1 lab:w2:p2
+  cp "$dir/home/state/work.meta" "$dir/home/state/conflict.meta"
+  rc=0
+  out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?
+  expect_code 1 "$rc" "duplicate former-selector claims must refuse: $out"
+  rm "$dir/home/state/conflict.meta"
+  touch "$dir/reuse-former"
+  : > "$dir/input"
+  rc=0
+  out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?
+  expect_code 1 "$rc" "reused former selector must refuse: $out"
+  [ ! -s "$dir/input" ] || fail 'reused former selector received input'
+  rm "$dir/reuse-former"
   : > "$dir/lose-response"
   rc=0
   out=$("$CONTROL" work move --workspace w1 --expected-window lab:w2:p2 2>&1) || rc=$?
   expect_code 1 "$rc" "lost response must not claim success: $out"
   grep -q '^herdr_move=' "$dir/home/state/work.meta" || fail 'unknown outcome lost pending barrier'
+  rc=0
+  out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?
+  expect_code 1 "$rc" "former selector must refuse while move is pending: $out"
   rc=0
   out=$("$CONTROL" work exit 2>&1) || rc=$?
   expect_code 1 "$rc" "pending move must refuse ordinary control: $out"
@@ -977,6 +1013,17 @@ PY
   grep -qx 'window=lab:w1:p3' "$dir/home/state/work.meta" || fail 'reconcile did not consume new returned identity'
   if grep -q '^herdr_move=' "$dir/home/state/work.meta"; then fail 'verified reconciliation left barrier'; fi
   [ "$(grep -c '"pane", "move"' "$dir/calls")" = 2 ] || fail 'reconciliation replayed a native move'
+  assert_move_route lab:w1:p1 lab:w1:p3
+  assert_move_route lab:w2:p2 lab:w1:p3
+  assert_move_route work lab:w1:p3
+  cp "$dir/endpoint.json" "$dir/saved-endpoint.json"
+  jq '.terminal = "replacement"' "$dir/saved-endpoint.json" > "$dir/endpoint.json"
+  : > "$dir/input"
+  rc=0
+  out=$("$SEND" work --key Enter 2>&1) || rc=$?
+  expect_code 1 "$rc" "moved task must refuse a replacement terminal: $out"
+  [ ! -s "$dir/input" ] || fail 'replacement terminal received input'
+  mv "$dir/saved-endpoint.json" "$dir/endpoint.json"
   pass 'fm-control Herdr move: returned IDs, persistent unknown-outcome barrier, same-terminal reconciliation and no replay'
 )
 
