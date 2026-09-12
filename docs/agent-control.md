@@ -28,6 +28,8 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 
 ## Verbs
 
+The agent lifecycle verbs are listed below; Herdr's endpoint verbs follow the [move and reconciliation contract](#herdr-endpoint-moves).
+
 | Verb | Effect | Postcondition |
 | --- | --- | --- |
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |

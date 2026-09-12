@@ -42,6 +42,11 @@
 # with it the completion links, so a process killed between the two halves would
 # leave nothing to reconstruct the close from. It writes
 # `state/<id>.backlog-close` first, and removes it once the close lands.
+# Teardown also stages this same record before closing a moved or enrolled Herdr
+# endpoint when backlog transitions are exempt, including persistent secondmates,
+# and during recursive descendant cleanup. Those paths remove it after physical
+# cleanup and metadata removal, without creating a backlog item for a secondmate.
+# bin/fm-backend.sh owns exact-generation, confirmed-absence retry admission.
 # The writer and replay share one complete-record validator, and teardown stages
 # that record before destructive cleanup, so it never publishes or acts on a close
 # replay would reject. The validator pins the data path to this home's configured

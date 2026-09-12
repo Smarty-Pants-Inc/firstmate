@@ -268,15 +268,17 @@ fm_task_inbox_doorbell_line() {  # <record-path>
     "$quoted" "$quoted"
 }
 
-# Ring the doorbell, best-effort: one endpoint-liveness pre-check, one advisory
-# composer pre-check, then the backend's submit machinery with a minimal retry
-# budget, verdict discarded.
+# Ring the doorbell, best-effort: verify a Herdr target against its inbox's
+# current owning record, check endpoint liveness and the advisory composer,
+# then use the backend's submit machinery with a minimal retry budget,
+# verdict discarded.
 # Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
 # (the watcher re-rings later), 2 the backend send failed, 3 skipped because
-# the endpoint is positively dead or missing (nothing typed; recovery owns the
-# record). No return value is delivery proof; the acknowledgement move is the
+# the endpoint is positively dead or missing, or the Herdr record cannot validate
+# that exact target (nothing typed; recovery owns the record).
+# No return value is delivery proof; the acknowledgement move is the
 # only delivery signal.
-# The skip is deliberately narrow: only an exact `pending` verdict defers,
+# The composer skip is deliberately narrow: only an exact `pending` verdict defers,
 # because there our Enter could submit someone's real half-typed content.
 # `pending-unproven` and `unknown` still ring - the worst outcome is a garbled
 # CONSTANT line the worker recovers semantically, while skipping on ambiguous

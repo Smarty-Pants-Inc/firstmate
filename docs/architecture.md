@@ -168,8 +168,7 @@ Its local-only typed plane - harness-native invocations and explicit backend tar
 
 Text for a worker to read and commands that drive a worker's process are separate planes.
 `fm-send.sh` is the data plane and always routing-marks a `kind=secondmate` target, which is right for a message and wrong for a lifecycle command, because a marked exit command arrives as chat the agent reasons about instead of executing.
-`bin/fm-control.sh` is the control plane: an allowlisted `interrupt`, `exit`, and transactional `relaunch` addressed to an exact task id, with per-harness mechanics owned by `bin/fm-control-lib.sh`, a verified postcondition per verb, and no arbitrary-text or raw-key entry point.
-[`docs/agent-control.md`](agent-control.md) owns the verb contract, the capability matrix, the relaunch transaction, and the fail-closed boundaries.
+[`docs/agent-control.md`](agent-control.md) owns `bin/fm-control.sh`'s agent lifecycle and Herdr endpoint verbs, capability matrix, transactions, and fail-closed boundaries.
 
 ## Busy state is semantic, per adapter
 
@@ -417,8 +416,8 @@ The procedure and outcome vocabulary are owned by the [`/updatefirstmate` skill]
 ## Restart-proof
 
 Fleet state lives in each task's session-provider backend (tmux by hard default, herdr or cmux when selected or auto-detected, zellij/orca when explicitly selected), no-mistakes run records, status event logs, local markdown under `data/` including `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, and persistent secondmate homes.
-For herdr, respawning after a server-restored layout closes and replaces confirmed no-agent or dead task-tab husks instead of requiring manual tab cleanup.
-At session start, confirmed-dead secondmate agent endpoints are closed and relaunched through the same secondmate spawn path, while ambiguous liveness reads are left untouched to avoid duplicate supervisors.
+Herdr restart handling follows the [presentation recovery contract](herdr-backend.md#presentation-spaces) and [retained endpoint contract](herdr-backend.md#retained-endpoint-enrollment).
+Secondmate startup recovery follows the [provisioning recovery procedure](../.agents/skills/secondmate-provisioning/SKILL.md#recovery).
 Use `/stow` before an intentional reset when the conversation may hold durable knowledge that has not yet been written to disk; after that, the next firstmate session can reconcile and carry on.
 
 ## Development notes

@@ -388,9 +388,11 @@ fm_backend_recorded_target_of_meta() {
 # and worktree. New non-tmux records carry endpoint_task_id because their
 # opaque runtime ids do not encode the task label. Legacy tmux records remain
 # valid only when their window name itself is exactly fm-<task-id>.
-# Only teardown may supply the exact state/<id>.backlog-close marker to retry
-# a moved or enrolled endpoint already positively confirmed absent. Its validated
-# task, data-root and spawn-generation binding must match; reused or unreadable
+# Only teardown, its recursive cleanup, and host-local remote-retirement admission
+# may supply the exact state/<id>.backlog-close marker to retry a moved or enrolled
+# endpoint already positively confirmed absent. Remote retirement supplies its
+# CONTROL_DATA binding; ordinary control still requires live identity. The marker's
+# validated task, data-root and spawn-generation binding must match; reused or unreadable
 # endpoints never qualify. This exception authorizes no input or source discard.
 # On success, sets FM_BACKEND_VALIDATED_BACKEND and
 # FM_BACKEND_VALIDATED_TARGET, plus FM_BACKEND_VALIDATED_CLOSED for that retry.
