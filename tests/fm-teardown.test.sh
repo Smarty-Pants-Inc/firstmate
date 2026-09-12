@@ -2073,7 +2073,7 @@ SH
 }
 
 test_herdr_retained_teardown_retries_own_closed_generation() (
-  local case_dir binding pid= birth channel log closed meta marker rc mutation home nested_home child_meta lock
+  local case_dir binding pid='' birth channel log closed meta marker rc mutation home nested_home child_meta lock
   [ "$(uname -s)" = Linux ] || return 0
   trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
   retained_bootstrap_preserves() {
@@ -2288,7 +2288,7 @@ PY
     [ ! -e "$meta" ] && [ ! -e "$marker" ] || fail "$binding retry retained completed cleanup records"
     [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail "$binding retry repeated endpoint closure"
     assert_grep 'child task-x1 done: retained cleanup result' "$channel" "$binding retry lost the final outcome"
-    [ "$(backlog_row_state "$case_dir")" = done ] || fail "$binding retry did not close the native task"
+    [ "$(backlog_row_state "$case_dir")" = 'done' ] || fail "$binding retry did not close the native task"
   done
   pass 'moved and enrolled teardown retries require their own generation and confirmed absence, preserving input and work safeguards'
 )

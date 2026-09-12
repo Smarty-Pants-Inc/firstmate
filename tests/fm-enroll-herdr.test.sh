@@ -265,6 +265,7 @@ cp "$META" "$TMP_ROOT/meta-before"
 if run_enroll; then fail 'duplicate enrollment accepted'; fi
 cmp "$TMP_ROOT/meta-before" "$META" || fail 'duplicate enrollment altered metadata'
 (
+  # shellcheck disable=SC2030 # Keep this identity check's fixture environment isolated.
   export FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH"
   unset FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND_HERDR_CLIENT_SESSION FM_BACKEND_HERDR_BIN
   . "$ROOT/bin/fm-backend.sh"
@@ -281,6 +282,7 @@ cmp "$TMP_ROOT/meta-before" "$META" || fail 'duplicate enrollment altered metada
 pass 'retained identity refuses Darwin and other unsupported platforms'
 # Native consumer validates the receipt instead of trusting a mutable label.
 (
+  # shellcheck disable=SC2031 # This check independently sets its own fixture environment.
   export FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH"
   unset FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND_HERDR_CLIENT_SESSION FM_BACKEND_HERDR_BIN
   # shellcheck source=bin/fm-backend.sh
@@ -413,6 +415,7 @@ for spec in \
       fail "changed enrolled identity accepted delivery through $selector"
     fi
   done
+  # shellcheck disable=SC2016 # The child shell expands its own arguments and retry status.
   if ! env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \
     -u FM_BACKEND_HERDR_CLIENT_SESSION -u FM_BACKEND_HERDR_BIN \
     FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH" bash -c '
@@ -491,6 +494,7 @@ mkdir -p "$REMOTE_STATE" "$REMOTE_HOME/config"
 cp "$META" "$REMOTE_STATE/retained.meta"
 jq '.sessions[0].name = "fm-remote"' "$TMP_ROOT/sessions.json" > "$TMP_ROOT/remote-sessions.json"
 mv "$TMP_ROOT/remote-sessions.json" "$TMP_ROOT/sessions.json"
+# shellcheck disable=SC2016 # The child shell expands its arguments and computed move identity.
 env FM_HOME="$REMOTE_HOME" PATH="$FAKEBIN:$BASE_PATH" bash -c '
   . "$1/bin/fm-backend.sh"
   fm_backend_source herdr

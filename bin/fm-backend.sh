@@ -614,7 +614,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id> [teardown-close-m
 }
 
 fm_backend_meta_for_window() {  # <target> <state-dir>
-  local target=$1 state=$2 meta window terminal route matched= found= herdr= former=
+  local target=$1 state=$2 meta window terminal route matched='' found='' herdr='' former=''
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
     window=$(fm_meta_get "$meta" window)

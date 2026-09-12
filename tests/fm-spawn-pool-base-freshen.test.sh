@@ -385,7 +385,7 @@ test_unreachable_origin_refuses_stale_pool_base() {
 }
 
 test_projected_allocation_contract() (
-  local refusal=$1 rec id out status pid= journal
+  local refusal=$1 rec id out status pid='' journal
   trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
   id="pool-projected-$refusal"
   rec=$(make_case "projected-$refusal" "$id")
@@ -496,7 +496,7 @@ PY
     assert_contains "$out" "spawned $id" "$refusal launch did not finish"
     assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/$id.meta" "$refusal lost its allocated checkout"
     kill -0 "$pid" || fail "$refusal replaced the shell"
-    python3 - "$CASE_DIR" "$refusal" <<'PY'
+    python3 - "$CASE_DIR" "$refusal" <<'PY' || fail "$refusal bypassed its allocation contract"
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 commands = [json.loads(line) for line in (root/'herdr.log').read_text().splitlines()]
@@ -507,7 +507,6 @@ assert len(native) == (1 if sys.argv[2] == 'verified' else 0), native
 if sys.argv[2] == 'presentation-off':
     assert not any(c[:2] in (['api', 'schema'], ['workspace', 'create']) for c in commands), commands
 PY
-    [ "$?" -eq 0 ] || fail "$refusal bypassed its allocation contract"
     pass "$refusal launch preserves its single allocation and supported membership path"
     return
   fi
@@ -531,7 +530,7 @@ PY
   assert_contains "$out" 'no authoritative task record' "$refusal retry did not require authoritative reconciliation"
   cmp "$journal" "$CASE_DIR/journal-before" || fail 'retry replaced the retained journal'
   cmp "$CASE_DIR/endpoint.json" "$CASE_DIR/endpoint-before" || fail 'retry changed the retained endpoint'
-  python3 - "$CASE_DIR" "$refusal" <<'PY'
+  python3 - "$CASE_DIR" "$refusal" <<'PY' || fail "$refusal retried allocation or removed its endpoint"
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 state = json.loads((root/'endpoint.json').read_text())
@@ -547,7 +546,6 @@ if sys.argv[2] != 'fetch':
 if sys.argv[2] == 'missing-membership':
     assert any(c[:2] == ['worktree', 'list'] for c in commands), commands
 PY
-  [ "$?" -eq 0 ] || fail "$refusal retried allocation or removed its endpoint"
   pass "projected $refusal refusal retains the allocation and journal without blind retries"
 )
 
