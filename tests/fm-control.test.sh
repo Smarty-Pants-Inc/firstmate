@@ -917,8 +917,10 @@ if a[:2] == ['pane', 'get']:
     if a[2] != state['pane']:
         if (root/'reuse-former').exists():
             print(json.dumps(dict(result=dict(pane=dict(pane_id=a[2],terminal_id='foreign-terminal')))))
+        elif (root/'former-error').exists():
+            print((root/'former-error').read_text(), file=sys.stderr)
         else:
-            print(json.dumps(dict(error=dict(code='pane_not_found'))))
+            print(json.dumps(dict(error=dict(code='pane_not_found'))), file=sys.stderr)
         sys.exit(1)
     result = dict(pane=pane())
 elif a[:2] == ['pane', 'process-info']:
@@ -994,6 +996,15 @@ PY
   expect_code 1 "$rc" "reused former selector must refuse: $out"
   [ ! -s "$dir/input" ] || fail 'reused former selector received input'
   rm "$dir/reuse-former"
+  for error in 'not-json' '{"error":{"code":"session_unavailable"}}'; do
+    printf '%s\n' "$error" > "$dir/former-error"
+    : > "$dir/input"
+    rc=0
+    out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?
+    expect_code 1 "$rc" "unverified former selector must refuse: $out"
+    [ ! -s "$dir/input" ] || fail 'unverified former selector received input'
+  done
+  rm "$dir/former-error"
   : > "$dir/lose-response"
   rc=0
   out=$("$CONTROL" work move --workspace w1 --expected-window lab:w2:p2 2>&1) || rc=$?

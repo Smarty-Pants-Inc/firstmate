@@ -2625,6 +2625,10 @@ if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$(fm_backend_of_meta "$STATE/$ID.meta")" = herdr ]; then
   fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" || exit 1
+  if grep -Eq '^herdr_(enrollment|route)=' "$STATE/$ID.meta"; then
+    echo "error: task $ID retains an existing Herdr identity; use fm-control $ID relaunch to preserve its endpoint and history" >&2
+    exit 1
+  fi
 fi
 if [ -e "$STATE/$ID.backlog-close" ] || [ -L "$STATE/$ID.backlog-close" ]; then
   echo "error: task $ID has a pending authoritative backlog close at $STATE/$ID.backlog-close; finish or repair that close before dispatching a new worker" >&2

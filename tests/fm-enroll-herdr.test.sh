@@ -292,6 +292,33 @@ fm_test_fake_gh "$FAKEBIN"
 fm_test_fake_gh_axi "$FAKEBIN"
 [ ! -e /tmp/fm-retained ] || fail 'reserved test task temporary directory already exists'
 TASK_TMP_CREATED=1
+cat > "$FAKEBIN/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ENROLL_FIXTURE/allocator-calls"
+exit 91
+SH
+chmod +x "$FAKEBIN/treehouse"
+cp "$TMP_ROOT/api-calls" "$TMP_ROOT/api-before-replay"
+if env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \
+  -u FM_BACKEND_HERDR_CLIENT_SESSION -u FM_BACKEND_HERDR_BIN \
+  FM_HOME="$HOME_FIXTURE" PATH="$FAKEBIN:$BASE_PATH" FM_SPAWN_NO_GUARD=1 \
+  HERDR_ENV=1 HERDR_SESSION=enroll-test HERDR_SOCKET_PATH="$TMP_ROOT/api.sock" \
+  HERDR_PANE_ID=w1:p1 HERDR_TAB_ID=w1:t1 HERDR_WORKSPACE_ID=w1 \
+  "$ROOT/bin/fm-spawn.sh" retained "$TMP_ROOT/project" --backend herdr --harness pi \
+  --model cliproxyapi/gpt-6-astra --effort high --mode direct-PR --yolo off > "$OUT" 2>&1; then
+  fail 'fresh spawn replay accepted the enrolled task'
+fi
+grep -q 'use fm-control retained relaunch' "$OUT" || { read_result; fail 'fresh spawn did not reach retained admission'; }
+cmp "$TMP_ROOT/meta-before" "$META" || fail 'fresh spawn replay replaced enrolled metadata'
+cmp "$TMP_ROOT/history-before" "$TMP_ROOT/history.jsonl" || fail 'fresh spawn replay replaced exact history'
+[ "$(fm_pid_identity "$PID")" = "$BIRTH" ] || fail 'fresh spawn replay replaced the retained process'
+[ ! -e "$TMP_ROOT/allocator-calls" ] || fail 'fresh spawn replay submitted another allocation'
+tail -n +"$(( $(wc -l < "$TMP_ROOT/api-before-replay") + 1 ))" "$TMP_ROOT/api-calls" > "$TMP_ROOT/replay-calls"
+if grep -Eq '^(pane (run|send-|close|move)|tab (create|close)|workspace (create|close)|worktree open)' "$TMP_ROOT/replay-calls"; then
+  fail 'fresh spawn replay mutated an endpoint'
+fi
+tasks-axi show retained --file "$HOME_FIXTURE/data/backlog.md" | grep -q '^  state: in_flight$' || fail 'fresh spawn replay replaced the native task'
+pass 'locked fresh-spawn admission preserves enrolled task, endpoint and exact history'
 touch "$TMP_ROOT/allow-launch"
 printf '%s\n' "$ROOT" > "$TMP_ROOT/source-root"
 if ! env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \

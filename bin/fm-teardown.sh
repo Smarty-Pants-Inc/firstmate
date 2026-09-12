@@ -2680,7 +2680,8 @@ preflight_descendant_treehouse_slots() {
     if ! is_treehouse_pool_slot "$project" "$worktree"; then
       continue
     fi
-    FM_HOME="${state%/state}" fm_backend_validate_task_endpoint "$meta" "$task_id" || return 1
+    FM_HOME="${state%/state}" FM_DATA_OVERRIDE="${state%/state}/data" \
+      fm_backend_validate_task_endpoint "$meta" "$task_id" "$state/$task_id.backlog-close" || return 1
     require_exclusive_worktree_slot_record "$meta" "$task_id" "$state" "$worktree" || return 1
   done
 }
@@ -2692,7 +2693,8 @@ validate_firstmate_home_children_removal() {
   for child_meta in "$sub_state"/*.meta; do
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
-    FM_HOME="$home" fm_backend_validate_task_endpoint "$child_meta" "$child_id" || return 1
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+      fm_backend_validate_task_endpoint "$child_meta" "$child_id" "$sub_state/$child_id.backlog-close" || return 1
     validate_pr_poll_cleanup "$sub_state" "$child_id" || return 1
     child_wt=$(meta_value "$child_meta" worktree)
     child_kind=$(meta_value "$child_meta" kind)
@@ -2835,7 +2837,8 @@ preflight_firstmate_home_herdr_children() {  # <home>
   for child_meta in "$sub_state"/*.meta; do
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
-    FM_HOME="$home" fm_backend_validate_task_endpoint "$child_meta" "$child_id" || return 1
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+      fm_backend_validate_task_endpoint "$child_meta" "$child_id" "$sub_state/$child_id.backlog-close" || return 1
     child_backend=$FM_BACKEND_VALIDATED_BACKEND
     child_target=$FM_BACKEND_VALIDATED_TARGET
     if [ "$child_backend" = herdr ]; then
@@ -2854,6 +2857,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
 
 cleanup_firstmate_home_children() {
   local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen
+  local child_closed child_close_marker child_spawn_gen
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -2863,13 +2867,12 @@ cleanup_firstmate_home_children() {
     child_proj=$(meta_value "$child_meta" project)
     child_kind=$(meta_value "$child_meta" kind)
     [ -n "$child_kind" ] || child_kind=ship
-    child_backend=$(fm_backend_of_meta "$child_meta")
-    if [ "$child_backend" = orca ]; then
-      child_t=$(meta_value "$child_meta" terminal)
-    else
-      child_t=$(FM_HOME="$home" fm_backend_target_of_meta "$child_meta")
-      [ -n "$child_t" ] || return 1
-    fi
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+      fm_backend_validate_task_endpoint "$child_meta" "$child_id" "$sub_state/$child_id.backlog-close" || return 1
+    child_backend=$FM_BACKEND_VALIDATED_BACKEND
+    child_t=$FM_BACKEND_VALIDATED_TARGET
+    child_closed=$FM_BACKEND_VALIDATED_CLOSED
+    child_close_marker=
     if [ "$child_backend" = orca ] && [ "$child_kind" != secondmate ]; then
       child_orca_worktree_id=$(require_orca_worktree_id "$child_meta") || return 1
       if [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
@@ -2883,7 +2886,20 @@ cleanup_firstmate_home_children() {
           echo "error: herdr session presentation lock is not held for child $child_id; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
         fi
-        fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
+        if grep -Eq '^herdr_(enrollment|route)=' "$child_meta"; then
+          fm_backlog_meta_spawn_gen "$child_meta" "$sub_state" || return 1
+          child_spawn_gen=$FM_BACKLOG_META_SPAWN_GEN
+          child_close_marker=$(fm_backlog_close_marker_path "$sub_state" "$child_id") || return 1
+          if [ -e "$child_close_marker" ] || [ -L "$child_close_marker" ]; then
+            fm_backlog_close_marker_validate "$child_close_marker" "$home/data" "$child_id" "$sub_state" || return 1
+            [ "$FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN" = "$child_spawn_gen" ] || return 1
+          else
+            fm_backlog_close_marker_write "$sub_state" "$child_id" "$home/data" "$child_spawn_gen" || return 1
+          fi
+        fi
+        if [ "$child_closed" = 0 ]; then
+          fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
+        fi
         if ! fm_backend_herdr_endpoint_confirmed_gone "$child_t"; then
           echo "error: herdr pane $child_t for child $child_id is not confirmed gone; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
@@ -2939,6 +2955,9 @@ cleanup_firstmate_home_children() {
     retire_busy_state "$sub_state" "$child_id" "$child_busy_gen" || return 1
     status_retire_presentation_task "$sub_state" "$child_id" || return 1
     fm_backlog_atomic_transition remove "$sub_state/$child_id.meta" "task record" "$sub_state" || return 1
+    if [ -n "$child_close_marker" ]; then
+      fm_backlog_close_marker_remove "$child_close_marker" "$sub_state" || return 1
+    fi
     rm -f "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.progress" \
       "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.omp-ext.ts" \
       "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \

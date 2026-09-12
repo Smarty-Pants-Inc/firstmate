@@ -94,7 +94,7 @@ fm_backend_herdr_route_selector() {
   route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 1
   session=$(printf '%s' "$route" | jq -er .session) || return 1
   [ "${target%%:*}" = "$session" ] || return 1
-  previous=$(fm_backend_herdr_cli "$session" pane get "${target#*:}") || true
+  previous=$(fm_backend_herdr_cli "$session" pane get "${target#*:}" 2>&1) || true
   printf '%s' "$previous" | jq -e --argjson r "$route" '
     .error.code == "pane_not_found" or
     (.result.pane | .pane_id == $r.identity.pane and .tab_id == $r.identity.tab

@@ -2043,6 +2043,9 @@ case "\${1:-} \${2:-}" in
     fi
     ;;
   "pane close")
+    if [ -n "\${FM_FAKE_HERDR_CLOSE_MARKER:-}" ]; then
+      cmp "\$FM_FAKE_HERDR_CLOSE_MARKER" "\$FM_FAKE_HERDR_CLOSE_MARKER_EXPECTED" || exit 1
+    fi
     : > "\${FM_FAKE_HERDR_CLOSED:?}"
     ;;
   "pane get")
@@ -2070,16 +2073,16 @@ SH
 }
 
 test_herdr_retained_teardown_retries_own_closed_generation() (
-  local case_dir binding pid= birth channel log closed meta marker rc mutation home nested_home child_meta
+  local case_dir binding pid= birth channel log closed meta marker rc mutation home nested_home child_meta lock
   [ "$(uname -s)" = Linux ] || return 0
   trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
-  for binding in moved enrolled recursive; do
+  for binding in moved enrolled recursive-enrolled recursive-moved; do
     case_dir=$(make_case "herdr-retained-retry-$binding")
     configure_secondmate_home "$case_dir" local "$case_dir/parent"
     channel="$case_dir/parent/state/mate-x.status"
     mkdir -p "$channel"
     write_meta "$case_dir" local-only ship
-    if [ "$binding" = recursive ]; then
+    if [[ "$binding" = recursive-* ]]; then
       seed_backlog_in_flight "$case_dir" secondmate
     else
       seed_backlog_in_flight "$case_dir"
@@ -2110,7 +2113,7 @@ sid='c2679539-b3bb-4e0d-a724-2a0e276777a3'
 (p/'history.jsonl').write_text(json.dumps(dict(type='session',version=3,id=sid,cwd=root+'/wt'))+'\n')
 with (p/'state/task-x1.meta').open('a') as f:
     f.write('harness=pi\n')
-    if binding == 'moved':
+    if binding.endswith('moved'):
         route=dict(task='task-x1',session='default',socket=root+'/herdr.sock',identity=identity,former=['default:wF:p0'])
         f.write('herdr_route='+json.dumps(route)+'\n')
     else:
@@ -2119,7 +2122,7 @@ with (p/'state/task-x1.meta').open('a') as f:
             shell_pid=int(pid),shell_identity=birth,parent_workspace='wH',pi_session_file=root+'/history.jsonl',pi_session_id=sid)
         f.write('herdr_enrollment='+json.dumps(receipt)+'\nherdr_parent_workspace_id=wH\npi_session_file='+root+'/history.jsonl\npi_session_id='+sid+'\n')
 PY
-    if [ "$binding" = recursive ]; then
+    if [[ "$binding" = recursive-* ]]; then
       home="$case_dir/home"; nested_home="$home/nested-home"
       mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects" \
         "$nested_home/state" "$nested_home/data" "$nested_home/config" "$nested_home/projects" \
@@ -2147,23 +2150,72 @@ PY
       printf 'home=%s\n' "$home" >> "$meta"
       export FM_HOME="$case_dir/primary"
       cp "$child_meta" "$case_dir/child-before"
-      sed "s|$nested_home|$FM_HOME|g" "$case_dir/child-before" > "$child_meta"
+      if [ "$binding" = recursive-enrolled ]; then
+        sed "s|$nested_home|$FM_HOME|g" "$case_dir/child-before" > "$child_meta"
+        rc=0
+        run_teardown "$case_dir" --force > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
+        [ "$rc" -ne 0 ] || fail 'recursive cleanup accepted a conflicting child owning home'
+        assert_grep 'conflicting retained enrollment binding' "$case_dir/refused.err" 'recursive cleanup bypassed enrollment ownership'
+        [ -f "$child_meta" ] && [ -f "$meta" ] && [ ! -e "$closed" ] && [ -d "$case_dir/wt" ] \
+          || fail 'conflicting child ownership changed the endpoint, source or records'
+        cp "$case_dir/child-before" "$child_meta"
+      fi
+      marker="$nested_home/state/task-x1.backlog-close"
+      printf 'id=task-x1\ndata=%s/data\nspawn_gen=teardown-test-task-x1\ncleanup_incomplete=0\n' \
+        "$nested_home" > "$case_dir/marker-before"
+      export FM_FAKE_HERDR_CLOSE_MARKER="$marker" FM_FAKE_HERDR_CLOSE_MARKER_EXPECTED="$case_dir/marker-before"
+      add_lock_aware_treehouse "$case_dir"
+      add_lsof_live_holder "$case_dir"
+      lock=$(git_index_lock_path "$case_dir/wt")
+      : > "$lock"
       rc=0
-      run_teardown "$case_dir" --force > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
-      [ "$rc" -ne 0 ] || fail 'recursive cleanup accepted a conflicting child owning home'
-      assert_grep 'conflicting retained enrollment binding' "$case_dir/refused.err" 'recursive cleanup bypassed enrollment ownership'
-      [ -f "$child_meta" ] && [ -f "$meta" ] && [ ! -e "$closed" ] && [ -d "$case_dir/wt" ] \
-        || fail 'conflicting child ownership changed the endpoint, source or records'
-      cp "$case_dir/child-before" "$child_meta"
-      run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
-        || fail "recursive enrolled cleanup failed: $(cat "$case_dir/stderr")"
-      [ -f "$closed" ] && [ ! -e "$home" ] && [ ! -e "$meta" ] \
-        || fail 'recursive enrolled cleanup did not close the endpoint and remove authorized homes'
-      [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail 'recursive enrolled cleanup did not resolve the exact child endpoint'
+      FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=0 run_teardown "$case_dir" --force \
+        > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      [ "$rc" -ne 0 ] || fail "$binding cleanup ignored the live index lock"
+      assert_grep 'not provably stale' "$case_dir/stderr" "$binding cleanup did not reach Treehouse lock refusal"
+      cmp "$marker" "$case_dir/marker-before" || fail "$binding cleanup lost the child close receipt"
+      cmp "$child_meta" "$case_dir/child-before" || fail "$binding cleanup lost the child metadata"
+      [ -f "$closed" ] && [ -f "$lock" ] && [ -f "$meta" ] && [ -d "$case_dir/wt" ] \
+        || fail "$binding cleanup did not preserve the blocked transaction"
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       pid=
-      pass 'recursive enrolled cleanup uses each child owning home and refuses conflicting receipts'
+      rm "$case_dir/fakebin/lsof" "$lock"
+      for mutation in missing-marker wrong-generation foreign-data reused-endpoint unreadable-endpoint unregistered-source; do
+        case "$mutation" in
+          missing-marker) rm "$marker" ;;
+          wrong-generation) sed 's/^spawn_gen=.*/spawn_gen=other-generation/' "$case_dir/marker-before" > "$marker" ;;
+          foreign-data) sed "s|^data=.*|data=$case_dir/data|" "$case_dir/marker-before" > "$marker" ;;
+          reused-endpoint) export FM_FAKE_HERDR_REUSED=1 ;;
+          unreadable-endpoint) export FM_FAKE_HERDR_PANE_GET_GARBAGE=1 ;;
+          unregistered-source)
+            git -C "$case_dir/project" worktree move "$case_dir/wt" "$case_dir/relocated"
+            mkdir "$case_dir/wt"
+            ;;
+        esac
+        rc=0
+        FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=0 run_teardown "$case_dir" --force \
+          > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
+        [ "$rc" -ne 0 ] || fail "$binding retry accepted $mutation"
+        cmp "$child_meta" "$case_dir/child-before" || fail "$binding retry changed child metadata on $mutation"
+        [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail "$binding retry repeated close on $mutation"
+        case "$mutation" in
+          unregistered-source)
+            assert_grep 'unsafe child worktree removal target' "$case_dir/refused.err" 'recursive retry bypassed source membership'
+            rmdir "$case_dir/wt"
+            git -C "$case_dir/project" worktree move "$case_dir/relocated" "$case_dir/wt"
+            ;;
+        esac
+        unset FM_FAKE_HERDR_REUSED FM_FAKE_HERDR_PANE_GET_GARBAGE
+        cp "$case_dir/marker-before" "$marker"
+      done
+      run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+        || fail "$binding cleanup retry failed: $(cat "$case_dir/stderr")"
+      [ -f "$closed" ] && [ ! -e "$home" ] && [ ! -e "$meta" ] \
+        || fail 'recursive enrolled cleanup did not close the endpoint and remove authorized homes'
+      [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail 'recursive enrolled cleanup did not resolve the exact child endpoint'
+      unset FM_FAKE_HERDR_CLOSE_MARKER FM_FAKE_HERDR_CLOSE_MARKER_EXPECTED
+      pass "$binding cleanup retries only its own closed generation and preserves child ownership and source safeguards"
       continue
     fi
     printf 'done: retained cleanup result\n' > "$case_dir/state/task-x1.status"
