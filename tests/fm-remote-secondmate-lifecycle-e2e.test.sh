@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Full remote secondmate lifecycle over the deterministic generic SSH boundary.
-# FM_TEST_SEED_ONLY=1 stops after seed/registry coverage, before runtime launch.
 set -u
 # This fixture owns a separate job queue and must start its own worker even
 # when the test runner itself was launched by a remote job.
@@ -813,10 +812,6 @@ cat >> "$PARENT/data/secondmates.md" <<EOF
 EOF
 remote_env "$ROOT/bin/fm-home-seed.sh" validate >/dev/null || fail "mixed local and remote registry validation failed"
 pass "mixed local and remote routes validate without migration"
-if [ "${FM_TEST_SEED_ONLY:-0}" = 1 ]; then
-  echo "SEED TESTS PASSED (runtime lifecycle not selected)"
-  exit 0
-fi
 
 # Launch on the remote home's own configured backend. Parent metadata records
 # host placement separately from that backend and arms the reply source.
