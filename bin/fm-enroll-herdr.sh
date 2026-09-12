@@ -135,19 +135,30 @@ cleanup() {
 }
 trap cleanup EXIT
 lock() { fm_lock_try_acquire "$1" || die "busy lifecycle lock: $1"; LOCKS+=("$1"); }
-while IFS= read -r home; do lock "$(fm_task_set_lock_path "$home/state")"; done < <(printf '%s' "$RECEIPT" | jq -r '.claim_homes | sort[]')
+CLAIM_STATES=()
+while IFS= read -r home; do
+  lock "$(fm_task_set_lock_path "$home/state")"
+  route_state="$home/state/parent-route"
+  if [ ! -e "$route_state" ] && [ ! -L "$route_state" ]; then
+    mkdir -m 700 "$route_state" || die 'cannot prepare parent-route custody lock directory'
+  fi
+  fm_backlog_directory_present "$route_state" 'parent-route state' || die "$FM_BACKLOG_TRANSITION_ERROR"
+  lock "$(fm_task_set_lock_path "$route_state")"
+  CLAIM_STATES+=("$home/state" "$route_state")
+done < <(printf '%s' "$RECEIPT" | jq -r '.claim_homes | sort[]')
 lock "$STATE/.spawn-$ID.lock"
 lock "$STATE/.control-$ID.lock"
 lock "$(fm_meta_lock_path "$META")"
-SESSION_LOCK=$(fm_backend_herdr_presentation_session_lock_path "$(field session)") || die 'native session/socket identity is unavailable'
-lock "$SESSION_LOCK"
-while IFS= read -r home; do
-  for record in "$home/state/"*.meta; do
+for claim_state in "${CLAIM_STATES[@]}"; do
+  for record in "$claim_state/"*.meta "$claim_state/".*.meta; do
     [ -e "$record" ] || [ -L "$record" ] || continue
     [ "$record" != "$META" ] || continue
+    lock "$claim_state/.control-$(basename "$record" .meta).lock"
     lock "$(fm_meta_lock_path "$record")"
   done
-done < <(printf '%s' "$RECEIPT" | jq -r '.claim_homes | sort[]')
+done
+SESSION_LOCK=$(fm_backend_herdr_presentation_session_lock_path "$(field session)") || die 'native session/socket identity is unavailable'
+lock "$SESSION_LOCK"
 for path in "$META" "$STATE/$ID.backlog-close" "$STATE/$ID.control-relaunch" "$STATE/$ID.herdr-presentation" "$INBOX"; do
   [ ! -e "$path" ] && [ ! -L "$path" ] || die "existing task artifact: $path"
 done
@@ -163,12 +174,14 @@ ROW=$(fm_backlog_row_show "$DATA" "$ID") || die 'task cannot be read'
 fm_backend_herdr_enrollment_source "$RECEIPT" || die 'source identity changed'
 SID=$("$SCRIPT_DIR/fm-pi-session-check.sh" "$(field pi_session_file)" "$(field worktree)" "$(field pi_session_id)") || die 'exact Pi history is not stopped and eligible'
 # Every supplied home is locked; scan actual native records, not labels.
-if ! python3 - "$RECEIPT" <<'PY'
+if ! python3 - "$RECEIPT" "${CLAIM_STATES[@]}" <<'PY'
 import json, os, pathlib, stat, sys
 r=json.loads(sys.argv[1])
 try:
-    for home in r['claim_homes']:
-        for p in pathlib.Path(home,'state').glob('*.meta'):
+    for state in sys.argv[2:]:
+        for name in sorted(os.listdir(state)):
+            if not name.endswith('.meta'): continue
+            p=pathlib.Path(state,name)
             s=p.lstat()
             if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1: raise ValueError('unsafe task record '+str(p))
             values={}

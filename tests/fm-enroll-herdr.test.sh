@@ -148,6 +148,49 @@ printf 'window=enroll-test:w2:p1\nworktree=/other\nkind=ship\n' > "$PEER/state/o
 refuse 'peer endpoint claim'; rm "$PEER/state/other.meta"
 printf 'window=elsewhere:w9:p1\nworktree=/other\nkind=ship\n' > "$PEER/state/retained.meta"
 refuse 'peer task claim'; rm "$PEER/state/retained.meta"
+for home in "$HOME_FIXTURE" "$PEER"; do
+  route_state="$home/state/parent-route"
+  mkdir -p "$route_state"
+  for claim in task source endpoint; do
+    record="$route_state/other.meta"
+    window=elsewhere:w9:p1
+    worktree="$home"
+    case "$claim" in
+      task) record="$route_state/retained.meta" ;;
+      source) worktree="$TMP_ROOT/worktree" ;;
+      endpoint) window=enroll-test:w2:p1 ;;
+    esac
+    printf 'window=%s\nworktree=%s\nkind=secondmate\nhome=%s\n' "$window" "$worktree" "$home" > "$record"
+    cp "$record" "$TMP_ROOT/route-before"
+    refuse "parent-route $claim claim"
+    grep -q 'already claimed by' "$OUT" || { read_result; fail 'parent-route conflict was not scanned'; }
+    cmp "$TMP_ROOT/route-before" "$record" || fail 'enrollment changed a parent-route claim'
+    rm "$record"
+  done
+done
+route_state="$PEER/state/parent-route"
+record="$route_state/peer-route.meta"
+printf 'window=elsewhere:w9:p1\nworktree=%s\nkind=secondmate\nhome=%s\n' "$PEER" "$PEER" > "$record"
+cp "$record" "$TMP_ROOT/route-before"
+for lock_path in "$(fm_task_set_lock_path "$route_state")" "$route_state/.control-peer-route.lock" "$(fm_meta_lock_path "$record")"; do
+  fm_lock_try_acquire "$lock_path" || fail 'could not hold fixture custody lock'
+  refuse 'busy parent-route custody'
+  grep -Fq "busy lifecycle lock: $lock_path" "$OUT" || { read_result; fail 'enrollment missed an existing parent-route lock'; }
+  fm_lock_release "$lock_path" || fail 'could not release fixture custody lock'
+done
+printf 'window=ambiguous:w9:p2\n' >> "$record"
+refuse 'ambiguous parent-route record'
+grep -q 'ambiguous task record' "$OUT" || { read_result; fail 'ambiguous parent-route record was not read'; }
+cp "$TMP_ROOT/route-before" "$record"
+ln -s "$record" "$route_state/link.meta"
+refuse 'symlinked parent-route record'
+rm "$route_state/link.meta"
+mv "$route_state" "$PEER/route-before"
+ln -s "$PEER/route-before" "$route_state"
+refuse 'symlinked parent-route directory'
+rm "$route_state"
+mv "$PEER/route-before" "$route_state"
+pass 'custody includes same-host parent routes and their task-set, control and metadata locks'
 # Native/API contradictions, including missing registration with a live worker.
 for spec in \
   'pane.json|.result.pane.foreground_cwd = "/wrong"' \
@@ -205,6 +248,7 @@ rmdir "$HOME_FIXTURE/state/retained.inbox/handled" "$HOME_FIXTURE/state/retained
 tasks-axi reopen retained --file "$HOME_FIXTURE/data/backlog.md" >/dev/null
 pass 'uncertain dispatch preserves metadata/inbox and reports reconciliation rather than success'
 run_enroll || { read_result; fail 'valid enrollment failed'; }
+cmp "$TMP_ROOT/route-before" "$PEER/state/parent-route/peer-route.meta" || fail 'valid enrollment changed unrelated parent-route ownership'
 META="$HOME_FIXTURE/state/retained.meta"
 grep -q '^window=enroll-test:w2:p1$' "$META" || fail 'endpoint missing'
 grep -q '^model=cliproxyapi/gpt-6-astra$' "$META" || fail 'model pin missing'

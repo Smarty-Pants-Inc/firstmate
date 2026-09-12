@@ -1127,6 +1127,10 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       FM_BACKLOG_CLOSE_REPLAY_RESULT=stale
       return 0
     fi
+    if grep -Eq '^herdr_(enrollment|route)=' "$meta"; then
+      FM_BACKLOG_TRANSITION_ERROR="retained endpoint cleanup for $id is incomplete; finish teardown with its recorded identity before replaying the close"
+      return 1
+    fi
     fm_backlog_close_marker_mark_cleanup_incomplete "$state" "$marker" "$id" "$data" \
       "$marker_spawn_gen" "${mode_flags[@]+"${mode_flags[@]}"}" "${args[@]+"${args[@]}"}" \
       || return 1

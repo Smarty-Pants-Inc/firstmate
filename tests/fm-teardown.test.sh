@@ -2076,6 +2076,27 @@ test_herdr_retained_teardown_retries_own_closed_generation() (
   local case_dir binding pid= birth channel log closed meta marker rc mutation home nested_home child_meta lock
   [ "$(uname -s)" = Linux ] || return 0
   trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
+  retained_bootstrap_preserves() {
+    local owner=$1 state=$2 data=$3 head_before
+    cp "$state/task-x1.meta" "$case_dir/bootstrap-meta-before"
+    cp "$state/task-x1.backlog-close" "$case_dir/bootstrap-close-before"
+    cp "$case_dir/history.jsonl" "$case_dir/bootstrap-history-before"
+    head_before=$(git -C "$case_dir/wt" rev-parse HEAD) || fail 'fixture source is unavailable'
+    FM_HOME="$owner" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" \
+      FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$owner/config" FM_BACKEND=tmux \
+      FM_BOOTSTRAP_NETWORK=skip FM_BOOTSTRAP_DETECT_ONLY=0 PATH="$case_dir/fakebin:$PATH" \
+      "$ROOT/bin/fm-bootstrap.sh" > "$case_dir/bootstrap.out" 2> "$case_dir/bootstrap.err" \
+      || fail "$binding owning-home startup failed: $(cat "$case_dir/bootstrap.err")"
+    assert_grep 'retained endpoint cleanup for task-x1 is incomplete' "$case_dir/bootstrap.out" \
+      "$binding startup did not report the pending cleanup"
+    cmp "$state/task-x1.meta" "$case_dir/bootstrap-meta-before" || fail "$binding startup erased retained identity"
+    cmp "$state/task-x1.backlog-close" "$case_dir/bootstrap-close-before" || fail "$binding startup changed close evidence"
+    cmp "$case_dir/history.jsonl" "$case_dir/bootstrap-history-before" || fail "$binding startup changed history"
+    [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] || fail "$binding startup changed source"
+    tasks-axi show task-x1 --file "$data/backlog.md" | grep -q '^  state: in_flight$' \
+      || fail "$binding startup retired the unfinished native task"
+    [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail "$binding startup repeated endpoint cleanup"
+  }
   for binding in moved enrolled recursive-enrolled recursive-moved; do
     case_dir=$(make_case "herdr-retained-retry-$binding")
     configure_secondmate_home "$case_dir" local "$case_dir/parent"
@@ -2129,6 +2150,8 @@ PY
         "$case_dir/primary"
       printf 'task-x1\n' > "$home/.fm-secondmate-home"
       printf 'nested-sm\n' > "$nested_home/.fm-secondmate-home"
+      printf 'backend = "markdown"\n' > "$nested_home/.tasks.toml"
+      seed_backlog_in_flight "$nested_home"
       child_meta="$nested_home/state/task-x1.meta"
       mv "$meta" "$child_meta"
       python3 - "$child_meta" "$nested_home" <<'PY'
@@ -2177,6 +2200,8 @@ PY
       cmp "$child_meta" "$case_dir/child-before" || fail "$binding cleanup lost the child metadata"
       [ -f "$closed" ] && [ -f "$lock" ] && [ -f "$meta" ] && [ -d "$case_dir/wt" ] \
         || fail "$binding cleanup did not preserve the blocked transaction"
+      retained_bootstrap_preserves "$nested_home" "$nested_home/state" "$nested_home/data"
+      [ -f "$lock" ] || fail "$binding startup removed the live index lock"
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       pid=
@@ -2229,6 +2254,7 @@ PY
     pid=
     cp "$marker" "$case_dir/marker-before"
     cp "$meta" "$case_dir/meta-before"
+    retained_bootstrap_preserves "$FM_HOME" "$case_dir/state" "$case_dir/data"
     for mutation in missing-marker wrong-generation foreign-data reused-endpoint unreadable-endpoint dirty-source; do
       case "$mutation" in
         missing-marker) rm "$marker" ;;
@@ -2236,7 +2262,11 @@ PY
         foreign-data) sed "s|^data=.*|data=$case_dir/parent|" "$case_dir/marker-before" > "$marker" ;;
         reused-endpoint) export FM_FAKE_HERDR_REUSED=1 ;;
         unreadable-endpoint) export FM_FAKE_HERDR_PANE_GET_GARBAGE=1 ;;
-        dirty-source) printf 'unlanded\n' > "$case_dir/wt/unlanded" ;;
+        dirty-source)
+          printf 'unlanded\n' > "$case_dir/wt/unlanded"
+          retained_bootstrap_preserves "$FM_HOME" "$case_dir/state" "$case_dir/data"
+          [ "$(cat "$case_dir/wt/unlanded")" = unlanded ] || fail "$binding startup discarded dirty work"
+          ;;
       esac
       rc=0
       run_teardown "$case_dir" > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
