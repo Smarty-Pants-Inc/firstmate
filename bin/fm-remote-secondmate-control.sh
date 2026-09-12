@@ -180,6 +180,11 @@ cmd_launch() {
         return 0
         ;;
       dead)
+        if grep -q '^herdr_route=' "$meta"; then
+          cmd_relaunch "$id" "$harness" "$model" "$effort" || return 1
+          print_route "$id"
+          return
+        fi
         fm_backend_kill "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null \
           || die "could not remove the confirmed agent-less endpoint"
         ;;

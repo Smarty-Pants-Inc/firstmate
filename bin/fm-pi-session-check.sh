@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify one exact, stopped native Pi v3 history before managed enrollment or
+# Validate one exact native Pi v3 history and visible writer claims before enrollment or
 # relaunch. Prints its UUID only. Never rewrites history or selects recent/fuzzy.
 # Usage: fm-pi-session-check.sh <absolute-session-file> <physical-worktree> [UUID]
 # Current retained-session admission is Linux-only: /proc checks same-user Pi
@@ -60,8 +60,7 @@ try:
         values = dict(item.split(b'=', 1) for item in env if b'=' in item)
         if values.get(b'PI_SESSION_ID') == sid.encode() or values.get(b'PI_SESSION_FILE') == path.encode():
             raise ValueError('native history is still used by a live process')
-        # Before Pi publishes its environment, the explicit CLI selection is
-        # already visible. Do not inspect arbitrary message substrings.
+        # Check explicit CLI selections while launch arguments remain visible.
         for i, arg in enumerate(args[:-1]):
             if arg in (b'--session', b'--session-id') and args[i+1] in (path.encode(), sid.encode()):
                 raise ValueError('native history already has a pending launch')

@@ -900,9 +900,10 @@ fi
 # This is the first cleanup authorization check. It is metadata-only and must
 # complete before fm-guard, a backend command, file removal, branch deletion,
 # worktree return, registry change, or process termination can run.
-fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
+fm_backend_validate_task_endpoint "$META" "$ID" "$STATE/$ID.backlog-close" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
+TEARDOWN_ENDPOINT_CLOSED=$FM_BACKEND_VALIDATED_CLOSED
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
 T_ORCA=
@@ -3094,6 +3095,10 @@ TEARDOWN_HERDR_SESSION=
 TEARDOWN_HERDR_PANE=
 if [ "$BACKEND" = herdr ]; then
   teardown_herdr_preflight_target "$T" "$ID" || exit 1
+  if [ "$TEARDOWN_ENDPOINT_CLOSED" = 1 ] && ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+    echo "REFUSED: task $ID's closed endpoint is no longer confirmed absent; preserving its teardown record." >&2
+    exit 1
+  fi
   fm_backend_herdr_parse_target "$T" || exit 1
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
@@ -3274,6 +3279,8 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   else
     echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
   fi
+elif [ "$BACKEND" = herdr ] && [ "$TEARDOWN_ENDPOINT_CLOSED" = 1 ]; then
+  :
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
     fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true

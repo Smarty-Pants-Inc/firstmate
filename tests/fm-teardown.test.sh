@@ -2019,6 +2019,7 @@ set -u
 printf '%s\n' "\$*" >> "\${FM_FAKE_HERDR_LOG:?}"
 case "\${1:-} \${2:-}" in
   "workspace list")
+    if [ -n "\${FM_FAKE_HERDR_WORKSPACES:-}" ]; then cat "\$FM_FAKE_HERDR_WORKSPACES"; exit; fi
     printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wH","active_tab_id":"wH:t1","focused":true},{"workspace_id":"wG","active_tab_id":"wG:tQ","focused":false}]}}'
     ;;
   "tab list")
@@ -2029,7 +2030,7 @@ case "\${1:-} \${2:-}" in
     esac
     ;;
   "pane list")
-    printf '%s\n' '{"result":{"panes":[{"pane_id":"wG:pQ","tab_id":"wG:tQ"}]}}'
+    printf '%s\n' '{"result":{"panes":[{"pane_id":"wG:pQ","tab_id":"wG:tQ","terminal_id":"retained-terminal"}]}}'
     ;;
   "status --json")
     printf '%s\n' '{"server":{"running":true}}'
@@ -2049,11 +2050,15 @@ case "\${1:-} \${2:-}" in
       printf '%s\n' 'not-json'
       exit 0
     fi
-    if [ -e "\${FM_FAKE_HERDR_CLOSED:?}" ]; then
+    if [ -e "\${FM_FAKE_HERDR_CLOSED:?}" ] && [ "\${FM_FAKE_HERDR_REUSED:-0}" = 0 ]; then
       printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
       exit 1
     fi
-    printf '%s\n' '{"result":{"pane":{"pane_id":"wG:pQ","tab_id":"wG:tQ","workspace_id":"wG"}}}'
+    printf '%s\n' '{"result":{"pane":{"pane_id":"wG:pQ","tab_id":"wG:tQ","workspace_id":"wG","terminal_id":"retained-terminal","cwd":"$case_dir/wt","foreground_cwd":"$case_dir/wt"}}}'
+    ;;
+  "pane process-info")
+    [ -n "\${FM_FAKE_HERDR_PID:-}" ] || exit 1
+    printf '{"result":{"process_info":{"pane_id":"wG:pQ","shell_pid":%s}}}\n' "\$FM_FAKE_HERDR_PID"
     ;;
   "agent get")
     printf '%s\n' '{"error":{"code":"agent_not_found"}}' >&2
@@ -2063,6 +2068,97 @@ esac
 SH
   chmod +x "$case_dir/fakebin/herdr"
 }
+
+test_herdr_retained_teardown_retries_own_closed_generation() (
+  local case_dir binding pid= birth channel log closed meta marker rc mutation
+  [ "$(uname -s)" = Linux ] || return 0
+  trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
+  for binding in moved enrolled; do
+    case_dir=$(make_case "herdr-retained-retry-$binding")
+    configure_secondmate_home "$case_dir" local "$case_dir/parent"
+    channel="$case_dir/parent/state/mate-x.status"
+    mkdir -p "$channel"
+    write_meta "$case_dir" local-only ship
+    seed_backlog_in_flight "$case_dir"
+    configure_flat_herdr_teardown_case "$case_dir"
+    export FM_HOME="$case_dir/home" FM_FAKE_HERDR_LOG="$case_dir/herdr.log" FM_FAKE_HERDR_CLOSED="$case_dir/closed"
+    log=$FM_FAKE_HERDR_LOG; closed=$FM_FAKE_HERDR_CLOSED
+    meta="$case_dir/state/task-x1.meta"; marker="$case_dir/state/task-x1.backlog-close"
+    mkfifo "$case_dir/input"
+    bash -c 'cd "$1"; exec 3<>"$2"; printf ready > "$3"; read -r unused <&3' \
+      shell "$case_dir/wt" "$case_dir/input" "$case_dir/ready" &
+    pid=$!
+    for _ in {1..100}; do [ ! -f "$case_dir/ready" ] || break; sleep .01; done
+    [ -f "$case_dir/ready" ] || fail 'retained shell did not start'
+    birth=$(FM_STATE_OVERRIDE="$case_dir/state" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_pid_identity "$2"' fixture "$ROOT" "$pid")
+    export FM_FAKE_HERDR_PID=$pid FM_FAKE_HERDR_WORKSPACES="$case_dir/workspaces.json"
+    python3 - "$case_dir" "$binding" "$pid" "$birth" <<'PY'
+import json, pathlib, sys
+root, binding, pid, birth = sys.argv[1:]
+p = pathlib.Path(root)
+identity = dict(pane='wG:pQ',tab='wG:tQ',workspace='wG',terminal='retained-terminal',cwd=root+'/wt',pid=int(pid),birth=birth)
+workspaces = []
+for workspace, path, linked in [('wH',root+'/project',False),('wG',root+'/wt',True)]:
+    workspaces.append(dict(workspace_id=workspace,active_tab_id=workspace+':t1',pane_count=1,tab_count=1,
+        worktree=dict(checkout_path=path,repo_root=root+'/project',repo_key=root+'/project/.git',is_linked_worktree=linked)))
+(p/'workspaces.json').write_text(json.dumps(dict(result=dict(workspaces=workspaces))))
+sid='c2679539-b3bb-4e0d-a724-2a0e276777a3'
+(p/'history.jsonl').write_text(json.dumps(dict(type='session',version=3,id=sid,cwd=root+'/wt'))+'\n')
+with (p/'state/task-x1.meta').open('a') as f:
+    f.write('harness=pi\n')
+    if binding == 'moved':
+        route=dict(task='task-x1',session='default',socket=root+'/herdr.sock',identity=identity,former=['default:wF:p0'])
+        f.write('herdr_route='+json.dumps(route)+'\n')
+    else:
+        receipt=dict(schema='fm-herdr-enrollment.v1',home=root+'/home',task='task-x1',project=root+'/project',worktree=root+'/wt',
+            common_git=root+'/project/.git',session='default',workspace='wG',tab='wG:tQ',pane='wG:pQ',terminal='retained-terminal',
+            shell_pid=int(pid),shell_identity=birth,parent_workspace='wH',pi_session_file=root+'/history.jsonl',pi_session_id=sid)
+        f.write('herdr_enrollment='+json.dumps(receipt)+'\nherdr_parent_workspace_id=wH\npi_session_file='+root+'/history.jsonl\npi_session_id='+sid+'\n')
+PY
+    printf 'done: retained cleanup result\n' > "$case_dir/state/task-x1.status"
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "$binding teardown ignored the undelivered final outcome"
+    assert_grep 'has not reached the parent channel' "$case_dir/stderr" "$binding teardown did not reach final delivery"
+    [ -f "$closed" ] && [ -f "$meta" ] && [ -f "$marker" ] || fail "$binding teardown did not retain its closed generation"
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    pid=
+    cp "$marker" "$case_dir/marker-before"
+    cp "$meta" "$case_dir/meta-before"
+    for mutation in missing-marker wrong-generation foreign-data reused-endpoint unreadable-endpoint dirty-source; do
+      case "$mutation" in
+        missing-marker) rm "$marker" ;;
+        wrong-generation) sed 's/^spawn_gen=.*/spawn_gen=other-generation/' "$case_dir/marker-before" > "$marker" ;;
+        foreign-data) sed "s|^data=.*|data=$case_dir/parent|" "$case_dir/marker-before" > "$marker" ;;
+        reused-endpoint) export FM_FAKE_HERDR_REUSED=1 ;;
+        unreadable-endpoint) export FM_FAKE_HERDR_PANE_GET_GARBAGE=1 ;;
+        dirty-source) printf 'unlanded\n' > "$case_dir/wt/unlanded" ;;
+      esac
+      rc=0
+      run_teardown "$case_dir" > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
+      [ "$rc" -ne 0 ] || fail "$binding retry accepted $mutation"
+      cmp "$meta" "$case_dir/meta-before" || fail "$binding retry changed metadata on $mutation"
+      case "$mutation" in
+        dirty-source) assert_grep 'REFUSED:' "$case_dir/refused.err" 'retry bypassed unlanded-work safeguards'; rm "$case_dir/wt/unlanded" ;;
+      esac
+      unset FM_FAKE_HERDR_REUSED FM_FAKE_HERDR_PANE_GET_GARBAGE
+      cp "$case_dir/marker-before" "$marker"
+    done
+    if FM_STATE_OVERRIDE="$case_dir/state" PATH="$case_dir/fakebin:$PATH" \
+      "$ROOT/bin/fm-send.sh" task-x1 --key Enter > "$case_dir/send.out" 2>&1; then
+      fail "$binding closed endpoint accepted input using its teardown marker"
+    fi
+    rmdir "$channel"
+    run_teardown "$case_dir" > "$case_dir/retry.out" 2> "$case_dir/retry.err" \
+      || fail "$binding closed-generation retry failed: $(cat "$case_dir/retry.err")"
+    [ ! -e "$meta" ] && [ ! -e "$marker" ] || fail "$binding retry retained completed cleanup records"
+    [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail "$binding retry repeated endpoint closure"
+    assert_grep 'child task-x1 done: retained cleanup result' "$channel" "$binding retry lost the final outcome"
+    [ "$(backlog_row_state "$case_dir")" = done ] || fail "$binding retry did not close the native task"
+  done
+  pass 'moved and enrolled teardown retries require their own generation and confirmed absence, preserving input and work safeguards'
+)
 
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes() {
   local case_dir log closed lock ready release holder_pid rc thlog
@@ -3676,6 +3772,7 @@ test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_secondmate_pr_registration_publishes_ready_line
 test_secondmate_home_teardown_delivers_final_line_or_refuses
+test_herdr_retained_teardown_retries_own_closed_generation
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes

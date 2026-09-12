@@ -106,6 +106,7 @@ External UI operations must remain serialized by that owner, as with native adop
 
 Enrollment requires exact workspace/tab/pane/terminal and kernel process identity, both reported cwd values and physical cwd, clean source and canonical common Git, a unique native parent and child membership, and one exact stopped Pi history.
 The current retained-history check supports Linux only and refuses another Pi or JavaScript runtime at the same cwd, including a process whose selected history is not exposed in its command line.
+This scan does not prove exclusivity against external sessions whose history selection is hidden; the receiving owner must confirm the original writer exited and maintain the complete claim scope and serialized lifecycle required for enrollment.
 Missing, conflicting, unreadable, or ambiguous evidence stops admission without changing the endpoint.
 Metadata and the inbox are published through the existing backlog transition contract; an unreadable dispatch outcome preserves the record for reconciliation and never reports success.
 

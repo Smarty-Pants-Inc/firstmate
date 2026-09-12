@@ -454,3 +454,30 @@ jq -e '.tasks[] | select(.id == "retained") | .endpoint |
   .target == "fm-remote:w2:p1" and .exists == true and .agent_alive == "alive"' "$OUT" >/dev/null \
   || { read_result; fail 'snapshot copies lost the moved endpoint or its liveness'; }
 pass 'moved remote delivery, control and relaunch share one metadata owner across home contexts'
+
+: > "$TMP_ROOT/api-calls"
+rm "$TMP_ROOT/live-agent"
+remote_control launch retained pi cliproxyapi/gpt-6-astra high herdr \
+  || { read_result; fail 'automatic remote recovery failed for a completed move'; }
+[ -f "$TMP_ROOT/live-agent" ] || fail 'remote recovery did not relaunch the agent'
+grep -qx 'target=fm-remote:w2:p1' "$OUT" || fail 'remote automatic recovery changed the endpoint'
+if grep -Eq '^pane (close|move) ' "$TMP_ROOT/api-calls"; then fail 'remote recovery closed or moved the retained terminal'; fi
+kill -0 "$PID" || fail 'remote recovery stopped the retained shell'
+
+fm_fake_exit0 "$FAKEBIN" gh no-mistakes
+printf 'pi cliproxyapi/gpt-6-astra high\n' > "$HOME_FIXTURE/config/secondmate-harness"
+: > "$TMP_ROOT/api-calls"
+rm "$TMP_ROOT/live-agent"
+env FM_HOME="$HOME_FIXTURE" FM_STATE_OVERRIDE="$REMOTE_STATE" \
+  FM_DATA_OVERRIDE="$REMOTE_HOME/data/.parent-route" FM_CONFIG_OVERRIDE="$HOME_FIXTURE/config" \
+  FM_BOOTSTRAP_NETWORK=only FM_SPAWN_NO_GUARD=1 FM_SKIP_SECONDMATE_SYNC=1 FM_SKIP_SECONDMATE_INHERIT=1 \
+  FM_CONTROL_POLL=.01 FM_CONTROL_LAUNCH_WAIT=.1 PATH="$FAKEBIN:$BASE_PATH" \
+  "$ROOT/bin/fm-bootstrap.sh" > "$OUT" 2>&1 || { read_result; fail 'automatic local recovery failed'; }
+[ -f "$TMP_ROOT/live-agent" ] || { read_result; fail 'local recovery did not relaunch the moved agent'; }
+if grep -Eq '^pane (close|move) ' "$TMP_ROOT/api-calls"; then fail 'local recovery closed or moved the retained terminal'; fi
+kill -0 "$PID" || fail 'local recovery stopped the retained shell'
+[ "$(fm_pid_identity "$PID")" = "$BIRTH" ] || fail 'automatic recovery changed shell identity'
+grep -qx 'window=fm-remote:w2:p1' "$REMOTE_STATE/retained.meta" || fail 'local automatic recovery changed the endpoint'
+cmp "$TMP_ROOT/history-before" "$TMP_ROOT/history.jsonl" || fail 'automatic recovery changed retained history'
+[ "$(< "$REMOTE_HOME/state/child.meta")" = 'window=child-session:fm-child' ] || fail 'automatic recovery changed child ownership'
+pass 'local and remote automatic recovery relaunch completed moves without closing retained terminals'

@@ -807,6 +807,15 @@ secondmate_liveness_one() {  # <meta> <id>
       fi
       ;;
     dead|missing)
+      if [ "$backend" = herdr ] && grep -q '^herdr_route=' "$meta"; then
+        if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-control.sh" "$id" relaunch 2>&1); then
+          secondmate_note_respawned "$id"
+          report_relaunch "$id" "confirmed agent absence on retained endpoint" "backend=$backend"
+        else
+          echo "SECONDMATE_LIVENESS: secondmate $id: retained-endpoint relaunch failed: $(first_line "$out")"
+        fi
+        return 0
+      fi
       if [ "$agent_state" = dead ]; then
         cause="confirmed agent absence on existing endpoint"
         fm_backend_kill "$backend" "$target" 2>/dev/null || true

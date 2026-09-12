@@ -403,11 +403,12 @@ fm_backend_endpoint_atom_valid() {  # <value>
   esac
 }
 
-fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
+fm_backend_validate_task_endpoint() {  # <meta-file> <task-id> [teardown-close-marker]
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
-  local session pane recorded_session workspace tab terminal worktree_id surface
+  local session pane recorded_session workspace tab terminal worktree_id surface endpoint_closed=0
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
+  FM_BACKEND_VALIDATED_CLOSED=0
   if [ -n "$(fm_meta_get "$meta" herdr_move)" ]; then
     echo "REFUSED: task $id has an unresolved Herdr move; reconcile its endpoint before control, recovery or cleanup." >&2
     return 1
@@ -493,6 +494,20 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         echo "REFUSED: Herdr endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
         return 1
       fi
+      if [ -n "${3:-}" ] && grep -Eq '^herdr_(enrollment|route)=' "$meta"; then
+        fm_backend_source herdr || return 1
+        if fm_backend_herdr_endpoint_confirmed_gone "$window"; then
+          if [ "$3" != "${meta%/*}/$id.backlog-close" ] \
+            || ! declare -F fm_backlog_close_marker_validate >/dev/null 2>&1 \
+            || ! fm_backlog_close_marker_validate "$3" "${FM_DATA_OVERRIDE:-$FM_HOME/data}" "$id" "${meta%/*}" \
+            || ! fm_backlog_meta_spawn_gen "$meta" "${meta%/*}" \
+            || [ "$FM_BACKLOG_META_SPAWN_GEN" != "$FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN" ]; then
+            echo "REFUSED: task $id has no matching teardown close marker for its absent endpoint." >&2
+            return 1
+          fi
+          endpoint_closed=1
+        fi
+      fi
       if grep -q '^herdr_enrollment=' "$meta"; then
         local enrollment history history_id parent_workspace
         enrollment=$(fm_backend_meta_exact_value "$meta" herdr_enrollment) || return 1
@@ -514,8 +529,8 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         fm_backend_source herdr || return 1
         # shellcheck source=bin/backends/herdr-enroll.sh
         . "$FM_BACKEND_LIB_DIR/backends/herdr-enroll.sh"
-        if ! fm_backend_herdr_enrollment_source "$enrollment" allow-dirty \
-          || ! fm_backend_herdr_enrollment_identity "$enrollment"; then
+        if [ "$endpoint_closed" = 0 ] && { ! fm_backend_herdr_enrollment_source "$enrollment" allow-dirty \
+          || ! fm_backend_herdr_enrollment_identity "$enrollment"; }; then
           echo "REFUSED: retained task $id no longer has its exact enrolled native identity." >&2
           return 1
         fi
@@ -524,7 +539,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         fm_backend_source herdr || return 1
         # shellcheck source=bin/backends/herdr-pane-move.sh
         . "$FM_BACKEND_LIB_DIR/backends/herdr-pane-move.sh"
-        fm_backend_herdr_route_identity "$meta" "$id" || {
+        fm_backend_herdr_route_identity "$meta" "$id" "$endpoint_closed" || {
           echo "REFUSED: task $id no longer has its recorded moved endpoint identity." >&2
           return 1
         }
@@ -587,7 +602,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
   FM_BACKEND_VALIDATED_BACKEND=$backend
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
-  FM_BACKEND_VALIDATED_TARGET=$window
+  FM_BACKEND_VALIDATED_TARGET=$window FM_BACKEND_VALIDATED_CLOSED=$endpoint_closed
   return 0
 }
 

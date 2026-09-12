@@ -78,8 +78,11 @@ fm_backend_herdr_route_identity() {
     and $window == ($session + ":" + $r.identity.pane)
     and $r.identity.pane == $pane and $r.identity.tab == $tab and $r.identity.workspace == $workspace
     and ($r.former | type == "array" and length > 0 and all(.[]; type == "string"))' >/dev/null || return 1
-  identity=$(fm_backend_herdr_move_identity "$session" "$(printf '%s' "$route" | jq -r .identity.pane)") || return 1
-  jq -en --argjson r "$route" --argjson now "$identity" '$r.identity == $now' >/dev/null || return 1
+  identity=$(printf '%s' "$route" | jq -ce .identity) || return 1
+  if [ "${3:-0}" = 0 ]; then
+    identity=$(fm_backend_herdr_move_identity "$session" "$(printf '%s' "$route" | jq -r .identity.pane)") || return 1
+    jq -en --argjson r "$route" --argjson now "$identity" '$r.identity == $now' >/dev/null || return 1
+  fi
   owner=$(fm_backend_meta_for_window "$session:$(printf '%s' "$identity" | jq -r .pane)" "${meta%/*}") || return 1
   [ "$owner" = "$meta" ]
 }
