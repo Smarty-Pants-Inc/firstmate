@@ -5200,11 +5200,16 @@ test_moved_launcher_and_recorded_recovery() {
 }
 
 test_native_project_adoption_contract() (
-  local dir="$TMP_ROOT/project-adopt" rc
+  local dir="$TMP_ROOT/project-adopt" rc project parent wt mutation failed=0
   mkdir -p "$dir"
-  git init -q "$dir/main" || fail 'could not create real Git fixture'
-  git -C "$dir/main" -c user.name=Test -c user.email=test@example.invalid commit -q --allow-empty -m init || fail 'fixture commit failed'
-  git -C "$dir/main" worktree add -q --detach "$dir/linked" || fail 'fixture linked worktree failed'
+  # Separate Git homes share an allocator root, not a repository identity.
+  for project in firstmate fm-deck; do
+    parent="$dir/homes/$project/projects/$project"
+    wt="$dir/managed-pool/.treehouse/$project/1/$project"
+    git init -q "$parent" || fail 'could not create real Git fixture'
+    git -C "$parent" -c user.name=Test -c user.email=test@example.invalid commit -q --allow-empty -m init || fail 'fixture commit failed'
+    git -C "$parent" worktree add -q --detach "$wt" || fail 'fixture linked worktree failed'
+  done
   # shellcheck source=/dev/null
   . "$ROOT/bin/backends/herdr-project.sh"
   fm_backend_herdr_cli() {
@@ -5213,31 +5218,77 @@ test_native_project_adoption_contract() (
     case "$1 $2" in
       'api schema') printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"worktree.open"}}}]}}}' ;;
       'workspace list')
-        jq -nc --arg wt "$dir/linked" --arg duplicate "${FM_TEST_DUP:-0}" '{result:{workspaces:([{workspace_id:"w2",pane_count:1,tab_count:1}] + if $duplicate == "1" then [{workspace_id:"w3",worktree:{checkout_path:$wt}}] else [] end)}}' ;;
-      'pane list') jq -nc --arg wt "$dir/linked" '{result:{panes:[{pane_id:"w2:p1",tab_id:"w2:t1",workspace_id:"w2",terminal_id:"same",cwd:$wt}]}}' ;;
-      'pane get') jq -nc --arg wt "$dir/linked" '{result:{pane:{pane_id:"w2:p1",tab_id:"w2:t1",workspace_id:"w2",terminal_id:"same",cwd:$wt}}}' ;;
-      'worktree list') jq -nc --arg wt "$dir/linked" '{result:{worktrees:[{path:$wt,is_linked_worktree:true,is_prunable:false,is_bare:false,open_workspace_id:"w2"}]}}' ;;
-      'worktree open') jq -nc --arg wt "$dir/linked" --arg parent "$dir/main" --arg ws "${FM_TEST_WORKSPACE:-w2}" '{result:{already_open:true,workspace:{workspace_id:$ws,worktree:{checkout_path:$wt,repo_root:$parent,is_linked_worktree:true}},root_pane:{pane_id:"w2:p1"},worktree:{path:$wt}}}' ;;
+        jq -nc --arg wt "$wt" --arg duplicate "${FM_TEST_DUP:-0}" '{result:{workspaces:([{workspace_id:"w2",pane_count:1,tab_count:1}] + if $duplicate == "1" then [{workspace_id:"w3",worktree:{checkout_path:$wt}}] else [] end)}}' ;;
+      'pane list'|'pane get')
+        jq -nc --arg wt "$wt" --arg parent "$parent" --arg method "$2" --arg mutation "${FM_TEST_MUTATION:-}" '
+          {pane_id:"w2:p1",tab_id:"w2:t1",workspace_id:"w2",terminal_id:"same",cwd:$parent,foreground_cwd:$wt}
+          | if $method == "list" then
+              if $mutation == "missing-cwd" then del(.foreground_cwd) | .cwd = $wt
+              elif $mutation == "empty-cwd" then .foreground_cwd = "" | .cwd = $wt
+              elif $mutation == "wrong-cwd" then .foreground_cwd = $parent | .cwd = $wt
+              elif $mutation == "wrong-pane" then .pane_id = "w2:p9"
+              elif $mutation == "wrong-workspace" then .workspace_id = "w9"
+              elif $mutation == "missing-terminal" then del(.terminal_id)
+              elif $mutation == "missing-tab" then del(.tab_id)
+              else . end
+              | {result:{panes:(if $mutation == "duplicate-pane" then [.,.] else [.] end)}}
+            else
+              if $mutation == "changed-terminal" then .terminal_id = "replacement"
+              elif $mutation == "changed-cwd" then .foreground_cwd = $parent
+              else . end | {result:{pane:.}}
+            end' ;;
+      'worktree list') jq -nc --arg wt "$wt" --arg mutation "${FM_TEST_MUTATION:-}" '
+        {path:$wt,is_linked_worktree:true,is_prunable:false,is_bare:false,open_workspace_id:"w2"}
+        | if $mutation == "missing-native-membership" then del(.open_workspace_id)
+          elif $mutation == "wrong-native-membership" then .open_workspace_id = "w9"
+          else . end | {result:{worktrees:[.]}}' ;;
+      'worktree open') jq -nc --arg wt "$wt" --arg parent "$parent" --arg ws "${FM_TEST_WORKSPACE:-w2}" '{result:{already_open:true,workspace:{workspace_id:$ws,worktree:{checkout_path:$wt,repo_root:$parent,is_linked_worktree:true}},root_pane:{pane_id:"w2:p1"},worktree:{path:$wt}}}' ;;
       *) fail "unexpected native call: $*" ;;
     esac
   }
-  fm_backend_herdr_project_adopt fmtest "$dir/linked" w2 w2:p1 || fail 'real Git linked checkout did not adopt existing workspace'
+  for project in firstmate fm-deck; do
+    parent="$dir/homes/$project/projects/$project"
+    wt="$dir/managed-pool/.treehouse/$project/1/$project"
+    # Assert the divergent signals themselves so the reproduction cannot pass vacuously.
+    fm_backend_herdr_cli fmtest pane list | jq -e --arg parent "$parent" --arg wt "$wt" '
+      .result.panes[0] | .cwd == $parent and .foreground_cwd == $wt and .cwd != .foreground_cwd' >/dev/null \
+      || fail 'fixture did not separate frozen creation cwd from live linked cwd'
+    if ! fm_backend_herdr_project_adopt fmtest "$wt" w2 w2:p1; then
+      echo "# $project: refused a verified live linked cwd with stale creation cwd"
+      failed=1
+    fi
+  done
+  [ "$failed" = 0 ] || fail 'both independent Git homes must adopt their live linked cwd'
+  for mutation in missing-cwd empty-cwd wrong-cwd wrong-pane wrong-workspace missing-terminal missing-tab duplicate-pane missing-native-membership wrong-native-membership; do
+    : > "$dir/calls"
+    rc=0
+    FM_TEST_MUTATION="$mutation" fm_backend_herdr_project_adopt fmtest "$wt" w2 w2:p1 || rc=$?
+    expect_code 1 "$rc" "$mutation must refuse before membership mutation"
+    if grep -q '^worktree open' "$dir/calls"; then fail "$mutation reached native adoption"; fi
+  done
+  for mutation in changed-terminal changed-cwd; do
+    : > "$dir/calls"
+    rc=0
+    FM_TEST_MUTATION="$mutation" fm_backend_herdr_project_adopt fmtest "$wt" w2 w2:p1 || rc=$?
+    expect_code 1 "$rc" "$mutation after adoption must refuse"
+    assert_grep 'worktree open' "$dir/calls" 'post-adoption identity check was not reached'
+  done
   : > "$dir/calls"
   rc=0
-  FM_TEST_DUP=1 fm_backend_herdr_project_adopt fmtest "$dir/linked" w2 w2:p1 || rc=$?
+  FM_TEST_DUP=1 fm_backend_herdr_project_adopt fmtest "$wt" w2 w2:p1 || rc=$?
   expect_code 1 "$rc" 'duplicate explicit checkout membership must refuse'
   if grep -q '^worktree open' "$dir/calls"; then fail 'duplicate membership reached native adoption'; fi
   rc=0
-  fm_backend_herdr_project_adopt fmtest "$dir/main" w2 w2:p1 >/dev/null 2>&1 || rc=$?
+  fm_backend_herdr_project_adopt fmtest "$parent" w2 w2:p1 >/dev/null 2>&1 || rc=$?
   expect_code 1 "$rc" 'primary checkout is not a linked Work'
   rc=0
-  FM_TEST_WORKSPACE=w9 fm_backend_herdr_project_adopt fmtest "$dir/linked" w2 w2:p1 || rc=$?
+  FM_TEST_WORKSPACE=w9 fm_backend_herdr_project_adopt fmtest "$wt" w2 w2:p1 || rc=$?
   expect_code 1 "$rc" 'unexpected native target must not be accepted'
-  pass 'Herdr project adoption: real Git isolation, exact native target, duplicate refusal, no second allocator'
+  pass 'Herdr project adoption: two independent Git homes, live cwd, exact identity, missing/ambiguous/wrong refusal, no second allocator'
 )
 
 test_moved_launcher_and_recorded_recovery
-test_native_project_adoption_contract
+test_native_project_adoption_contract || exit 1
 test_version_check_accepts_current_protocol
 test_version_check_refuses_old_protocol
 test_version_check_refuses_missing_herdr

@@ -62,8 +62,12 @@
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
 #   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
-#   auto-detected herdr or cmux spawn prints a loud stderr notice;
+#   session provider only, exactly like herdr/zellij, so it does. Treehouse-backed
+#   fresh spawns resolve the allocator executable from the spawning process's
+#   PATH before endpoint creation and pass a nonempty TREEHOUSE_ROOT as --root.
+#   The new terminal cannot silently substitute its own executable or root;
+#   absent TREEHOUSE_ROOT, the resolved allocator retains its configured default.
+#   An auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
 #   blocked backend contract. Default tmux spawns do not write backend= to meta;
@@ -2182,6 +2186,14 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  TREEHOUSE_BIN=$(resolve_pi_executable treehouse) || {
+    echo "error: treehouse executable is unavailable in the spawning process PATH; refusing allocation" >&2
+    exit 1
+  }
+  TREEHOUSE_GET="$(shell_quote "$TREEHOUSE_BIN") get"
+  if [ -n "${TREEHOUSE_ROOT:-}" ]; then
+    TREEHOUSE_GET="$TREEHOUSE_GET --root $(shell_quote "$TREEHOUSE_ROOT")"
+  fi
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
     exit 1
@@ -3066,7 +3078,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  spawn_send_text_line "$WT_TARGET" "$TREEHOUSE_GET" || {
+    echo "error: could not submit the resolved Treehouse allocation command; inspect window $T" >&2
+    exit 1
+  }
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an

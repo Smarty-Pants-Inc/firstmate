@@ -45,8 +45,13 @@ fm_backend_herdr_project_adopt() { # <session> <worktree> <workspace> <pane>
     ([.result.workspaces[] | select(.workspace_id == $workspace and .pane_count == 1 and .tab_count == 1)] | length) == 1
     and ([.result.workspaces[] | select(.worktree.checkout_path == $wt and .workspace_id != $workspace)] | length) == 0' >/dev/null || return 1
   panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace") || return 1
-  printf '%s' "$panes" | jq -e --arg pane "$pane" --arg wt "$wt" '
-    .result.panes | length == 1 and .[0].pane_id == $pane and .[0].cwd == $wt' >/dev/null || return 1
+  # As in current_path, creation-time cwd does not follow the allocator's shell.
+  # Require one exact live pane; a missing foreground cwd must never fall back.
+  printf '%s' "$panes" | jq -e --arg pane "$pane" --arg workspace "$workspace" --arg wt "$wt" '
+    .result.panes | length == 1 and (.[0] |
+      .pane_id == $pane and .workspace_id == $workspace and .foreground_cwd == $wt
+      and (.tab_id | type == "string" and length > 0)
+      and (.terminal_id | type == "string" and length > 0))' >/dev/null || return 1
   # Native lookup, not labels or a guessed workspace ID. Require the server to
   # select the existing task workspace before any membership mutation.
   native=$(fm_backend_herdr_cli "$session" worktree list --cwd "$parent") || return 1
@@ -54,7 +59,7 @@ fm_backend_herdr_project_adopt() { # <session> <worktree> <workspace> <pane>
     [.result.worktrees[] | select(.path == $wt and .is_linked_worktree == true
       and .is_prunable == false and .is_bare == false and .open_workspace_id == $workspace)]
     | length == 1' >/dev/null || return 1
-  before=$(printf '%s' "$panes" | jq -ce '.result.panes[0] | {pane_id,tab_id,workspace_id,terminal_id,cwd}') || return 1
+  before=$(printf '%s' "$panes" | jq -ce '.result.panes[0] | {pane_id,tab_id,workspace_id,terminal_id,cwd,foreground_cwd}') || return 1
   # No trust flag, label rewrite, branch selection, new allocator, or retry.
   out=$(fm_backend_herdr_cli "$session" worktree open --cwd "$parent" --path "$wt" --no-focus) || return 1
   printf '%s' "$out" | jq -e --arg workspace "$workspace" --arg pane "$pane" --arg wt "$wt" --arg parent "$parent" '
@@ -63,6 +68,6 @@ fm_backend_herdr_project_adopt() { # <session> <worktree> <workspace> <pane>
     and .result.workspace.worktree.checkout_path == $wt
     and .result.workspace.worktree.repo_root == $parent
     and .result.workspace.worktree.is_linked_worktree == true' >/dev/null || return 1
-  after=$(fm_backend_herdr_cli "$session" pane get "$pane" | jq -ce '.result.pane | {pane_id,tab_id,workspace_id,terminal_id,cwd}') || return 1
+  after=$(fm_backend_herdr_cli "$session" pane get "$pane" | jq -ce '.result.pane | {pane_id,tab_id,workspace_id,terminal_id,cwd,foreground_cwd}') || return 1
   [ "$before" = "$after" ] || return 1
 }
