@@ -1,0 +1,29 @@
+Real Firstmate CLI refusal checks; no stubs, native endpoint operations, or private fleet inputs.
+Candidate: 454a08d9aefab1e16ad4c59fd9916a1a18ec2d0f
+Environment: FM_HOME and FM_GATE_REFUSE_BYPASS unset; no protected-session override except where shown.
+
+Enrollment requires an explicit owning home
+$ bin/fm-enroll-herdr.sh validation-task
+
+error: explicit FM_HOME is required
+exit=2
+
+Default fleet cannot be selected as a lab
+$ bin/fm-herdr-lab.sh prepare default
+
+fm-herdr-lab: refusing protected fleet session 'default'
+exit=1
+
+Explicit protected fleet cannot be selected as a lab
+$ FM_HERDR_LAB_PROTECTED_SESSION=fm-lab-protected-validation bin/fm-herdr-lab.sh prepare fm-lab-protected-validation
+
+fm-herdr-lab: refusing protected fleet session 'fm-lab-protected-validation'
+exit=1
+
+Lab commands reject a caller-supplied session override
+$ bin/fm-herdr-lab.sh run fm-lab-validation pane list --session default
+
+fm-herdr-lab: run forbids caller-supplied --session; the helper appends the lab session
+exit=1
+
+No lab tripwire directory was created.
