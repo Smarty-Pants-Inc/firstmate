@@ -17,6 +17,8 @@
 # .fm-secondmate-home marker commits the complete seed last.
 # A newly created home is removed on failure. An existing matching seeded home
 # is converged only through guarded ordinary-file updates and new project clones.
+# Local-only records require a validated local clone source and local-only/off
+# registry posture; their clones do not run no-mistakes initialization.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -219,7 +221,17 @@ EOF
   safe_id "$NAME" || die "project name is unsafe: $NAME"
   [ -n "$ORIGIN" ] || die "project $NAME has no origin"
   fm_project_origin_safe "$ORIGIN" || die "project $NAME origin is not an accepted clone URL: $ORIGIN"
-  case "$MODE" in no-mistakes|direct-PR) ;; *) die "project $NAME has unsupported remote mode: $MODE" ;; esac
+  case "$MODE" in
+    no-mistakes|direct-PR) ;;
+    local-only)
+      case "$ORIGIN" in /*|file:///*) ;; *) die "local-only project $NAME requires a supplied local source" ;; esac
+      mkdir -p "$TMP/registry-check"
+      printf '%s\n' "$REGISTRY_LINE" > "$TMP/registry-check/projects.md"
+      POSTURE=$(FM_DATA_OVERRIDE="$TMP/registry-check" "$SCRIPT_DIR/fm-project-mode.sh" "$NAME")
+      [ "$POSTURE" = 'local-only off' ] || die "remote local-only project $NAME requires a local-only registry record with yolo off"
+      ;;
+    *) die "project $NAME has unsupported remote mode: $MODE" ;;
+  esac
   case "$REGISTRY_LINE" in "- $NAME "*) ;; *) die "project $NAME registry line is malformed" ;; esac
   DEST="$FM_HOME/projects/$NAME"
   if [ -e "$DEST" ] || [ -L "$DEST" ]; then

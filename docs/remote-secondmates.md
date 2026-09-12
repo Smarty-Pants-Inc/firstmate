@@ -18,7 +18,8 @@ Do not enable agent forwarding for Firstmate.
 `fm-on.sh` also disables agent forwarding, forwarding setup, and configured `SendEnv` patterns on every call, and arms bounded SSH dead-peer detection so a vanished host (a reboot, a dropped link) fails within a bounded window instead of hanging indefinitely; its [script header](../bin/fm-on.sh) owns the keepalive defaults and environment overrides.
 
 Clone Firstmate on the remote host at an absolute code-root path.
-Expose that clone's fixed entrypoint on the account's non-interactive SSH `PATH`, for example:
+`fm-on.sh` invokes that configured root's fixed entrypoint by absolute path, so the initial SSH connection does not depend on finding it on `PATH`.
+The readiness doctor still checks and can repair the account's entrypoint symlink; to prepare it manually:
 
 ```sh
 mkdir -p ~/.local/bin
@@ -132,10 +133,14 @@ bin/fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> {<projec
 Name each project's origin as `<project>=<origin-url>`.
 Resolve the concrete origin from the captain, the project registry, an existing clone anywhere, the forge, or an explicit paste rather than imposing one URL template.
 Seeding a project this machine has never cloned needs no clone under `projects/`, no `no-mistakes` initialization here, and no fleet sync first.
-A bare `<project>` is still accepted when this machine happens to have `projects/<project>`, whose configured origin is then read instead of being retyped.
+A bare `<project>` is still accepted for remote-backed modes when this machine happens to have `projects/<project>`, whose configured origin is then read instead of being retyped.
 [`bin/fm-project-origin-lib.sh`](../bin/fm-project-origin-lib.sh) owns which URLs are accepted; it decides on structure and safety alone, so no forge, domain, or host is privileged and a self-hosted server works exactly as a hosted one does.
 The primary validates every resolved origin before transport, and the receiving host validates it again before cloning.
-The project's registered delivery mode still comes from this machine's `data/projects.md`, so an unregistered or `local-only` project is refused rather than provisioned.
+The project's registered delivery mode still comes from this machine's `data/projects.md`; unregistered projects are refused.
+Local-only projects normally stay with the primary because their delivery uses a local default branch instead of a remote-backed PR.
+Explicit remote seeding is the narrow exception: a registered `local-only` project requires `yolo` off and a supplied local Git source on the receiving host, using the source forms owned by the [seed header](../bin/fm-remote-home-seed.sh).
+The receiver clones that exact source and retains it as the origin without requiring its publication or initializing no-mistakes for that project.
+Missing or unsafe sources and conflicting registry posture refuse; this exception does not enable local-only backlog handoff or relax the ordinary readiness and source-preservation checks.
 
 The seed records `host:`, `root:`, and `home:` in `data/secondmates.md`, gates the host on readiness, sends a bounded manifest, and lets the remote host clone its own Firstmate home and project origins.
 In the primary home, its durable registration effects are limited to that route and the charter brief under `data/<id>`; launch records are created only when the secondmate is launched.
@@ -145,6 +150,7 @@ It does not copy project trees or the primary process environment.
 A known provisioning failure rolls back the new route, while SSH exit 255 preserves it because remote completion is unknown and must be reconciled on the same host.
 
 Seeding also writes a durable `.fm-secondmate-parent` record next to the home's `.fm-secondmate-home` identity marker, naming this home's route to its parent as `local` or `remote`.
+The remote charter's reply log and steering inbox point to receiving-host storage; the primary charter remains the source for that translated copy.
 The promised-public-reply subsystem is same-filesystem by construction, so a remote route can never carry a delegated public-reply promise; `bin/fm-teardown.sh`'s cleanup gate reads this record to treat a remote parent as out of scope rather than an unresolved binding.
 
 Local secondmates keep the existing route form and need no migration.
@@ -255,7 +261,8 @@ No generic remote delete or write surface exists: remote writes are confined to 
 ## Verification
 
 The portable tests use the real entrypoint protocol, real git repositories, a deterministic SSH boundary, a stateful host-local Herdr CLI fixture, and a controlled account fixture for the readiness gate.
-The lifecycle test covers seeding a registered project that this machine has never cloned, asserts that the local project tree is unchanged afterwards, and carries Bitbucket, self-hosted, and scp-like origins through to the remote clone:
+The lifecycle test covers seeding a registered project that this machine has never cloned, asserts that the local project tree is unchanged afterwards, and carries Bitbucket, self-hosted, and scp-like origins through to the remote clone.
+It also covers explicit local-only sources, repeated seeding, source and registry preservation, receiver refusals, and the separate initialization behavior of remote-backed modes:
 
 ```sh
 bin/fm-test-run.sh tests/fm-on.test.sh

@@ -10,8 +10,9 @@
 # alias is refused. The command must be a genuine executable in this checkout's
 # bin/fm-*.sh namespace. No per-command table exists.
 #
-# argv is encoded as one NUL-delimited stream and passed through the fixed
-# fm-remote-entrypoint.sh. The remote command's stdin is /dev/null by default,
+# argv is encoded as one NUL-delimited stream and passed through the configured
+# remote root's fixed bin/fm-remote-entrypoint.sh, without relying on SSH PATH.
+# The remote command's stdin is /dev/null by default,
 # because remote staging captures stdin to EOF and an open caller stream would
 # block staging indefinitely; a payload caller passes --stdin to forward its
 # own stream as the job's bounded input. stdout and stderr remain separate, and
@@ -111,13 +112,16 @@ case "$ALIVE_COUNT_MAX" in ''|*[!0-9]*) die "FM_SSH_ALIVE_COUNT_MAX must be a po
 [ "$ALIVE_INTERVAL" -gt 0 ] || die "FM_SSH_ALIVE_INTERVAL must be a positive integer: $ALIVE_INTERVAL"
 [ "$ALIVE_COUNT_MAX" -gt 0 ] || die "FM_SSH_ALIVE_COUNT_MAX must be a positive integer: $ALIVE_COUNT_MAX"
 
+# OpenSSH joins remote argv into shell source; quote the configured path as data.
+ENTRYPOINT="$ROOT/bin/fm-remote-entrypoint.sh"
+ENTRYPOINT="'${ENTRYPOINT//\'/\'\\\'\'}'"
 SSH_ARGS=(
   -o ForwardAgent=no
   -o ClearAllForwardings=yes
   -o 'SendEnv=-*'
   -o "ServerAliveInterval=$ALIVE_INTERVAL"
   -o "ServerAliveCountMax=$ALIVE_COUNT_MAX"
-  -- "$HOST" fm-remote-entrypoint.sh "$PROTOCOL" "$ROOT_B64" "$HOME_B64" "$ARGV_B64"
+  -- "$HOST" "$ENTRYPOINT" "$PROTOCOL" "$ROOT_B64" "$HOME_B64" "$ARGV_B64"
 )
 if [ "$STDIN_MODE" = caller ]; then
   exec "$SSH_BIN" "${SSH_ARGS[@]}"

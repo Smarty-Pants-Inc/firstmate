@@ -692,6 +692,56 @@ test_watcher_dead_pane_ignores_stale_busy_state() {
   pass "watcher: dead-pane recovery overrides stale busy state"
 }
 
+test_watcher_keeps_unavailable_herdr_tasks() {
+  local flavor dir state out log rec pid receipt project="$TMP_ROOT/inventory-project"
+  fm_git_init_commit "$project"
+  git -C "$project" worktree add --quiet -b retained "$TMP_ROOT/inventory-worktree"
+  for flavor in route enrollment; do
+    dir=$(setup_watch_case "missing-herdr-$flavor")
+    state="$dir/state"; out="$dir/watch.out"; log="$dir/herdr.log"; : > "$log"
+    cat > "$dir/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_HERDR_LOG"
+case "$1 ${2:-}" in
+  'session list') jq -cn --arg socket "$FM_HOME/lab.sock" '{sessions:[{name:"lab",running:true,socket_path:$socket}]}' ;;
+  'pane get') printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1 ;;
+  'status --json') printf '%s\n' '{"server":{"running":true}}' ;;
+  *) exit 91 ;;
+esac
+SH
+    chmod +x "$dir/fakebin/herdr"
+    fm_write_meta "$state/t1.meta" 'backend=herdr' 'endpoint_task_id=t1' 'window=lab:w2:p1' \
+      'kind=ship' 'harness=pi' "project=$project" "worktree=$TMP_ROOT/inventory-worktree" \
+      'herdr_session=lab' 'herdr_workspace_id=w2' 'herdr_tab_id=w2:t1' 'herdr_pane_id=w2:p1' \
+      'herdr_parent_workspace_id=w1' "pi_session_file=$dir/history.jsonl" 'pi_session_id=fixture-history'
+    receipt=$(jq -cn --arg home "$dir" --arg metadata "$state/t1.meta" \
+      --arg project "$project" --arg worktree "$TMP_ROOT/inventory-worktree" '
+      {schema:"fm-herdr-enrollment.v1",home:$home,metadata:$metadata,task:"t1",session:"lab",
+       workspace:"w2",tab:"w2:t1",pane:"w2:p1",terminal:"retained",shell_pid:1,shell_identity:"fixture",
+       project:$project,worktree:$worktree,common_git:($project+"/.git"),parent_workspace:"w1",
+       pi_session_file:($home+"/history.jsonl"),pi_session_id:"fixture-history",socket:($home+"/lab.sock"),
+       identity:{pane:"w2:p1",tab:"w2:t1",workspace:"w2"},former:["lab:w1:p7"]}')
+    printf 'herdr_%s=%s\n' "$flavor" "$receipt" >> "$state/t1.meta"
+    rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "Recover the unavailable retained task.")
+    age_path "$rec"
+    watch_bg "$state" "$dir/fakebin" "$out" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_TEST_HERDR_LOG="$log" FM_TASK_INBOX_RING_MAX=99
+    pid=$!
+    wait_watcher_gone "$pid" \
+      || { kill "$pid" 2>/dev/null; fail "$flavor task vanished from inbox supervision"; }
+    wait "$pid" || fail "$flavor watcher failed instead of escalating"
+    [ "$(grep -cF 'unread firstmate instruction' "$state/.wake-queue" 2>/dev/null || true)" = 1 ] \
+      || fail "$flavor task did not emit exactly one recovery wake"
+    grep -qF "$rec" "$state/.wake-queue" || fail 'recovery wake lost the pending instruction identity'
+    grep -q '^pane get w2:p1 ' "$log" || fail 'fixture did not reach the unavailable native endpoint'
+    if grep -Eq '^pane (send-text|send-keys|run) ' "$log"; then fail 'unavailable task received terminal input'; fi
+    [ -f "$rec" ] || fail 'unavailable task lost its durable instruction'
+    [ "$(cat "$state/t1.inbox/.escalated")" = "${rec##*/}" ] || fail 'recovery notification was not deduplicated'
+    [ "$(inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" = quiet ] || fail 'unavailable task escalation repeated'
+  done
+  pass 'watcher: unavailable moved and enrolled endpoints retain inbox recovery notifications without input'
+}
+
 test_write_is_durable_and_exact
 test_doorbell_is_a_shell_noop
 test_doorbell_rejects_terminal_controls
@@ -712,3 +762,4 @@ test_watcher_surfaces_unwritable_ladder
 test_watcher_escalates_once_after_budget
 test_watcher_dead_pane_escalates_once_without_ringing
 test_watcher_dead_pane_ignores_stale_busy_state
+test_watcher_keeps_unavailable_herdr_tasks

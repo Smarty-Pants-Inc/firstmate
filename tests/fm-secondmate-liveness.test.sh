@@ -165,7 +165,12 @@ test_herdr_agent_state_preserves_husk_classifier() {
   for row in 'dead missing' 'no-agent dead' 'live alive' 'unknown unreadable'; do
     pane_state=${row%% *}
     expected=${row#* }
-    out=$(FM_TEST_PANE_STATE="$pane_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
+    out=$(FM_TEST_PANE_STATE="$pane_state" bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }
+      fm_backend_herdr_server_running_state() { printf unknown; }
+      fm_backend_herdr_agent_state "sess:p1"
+    ' "$ROOT")
     [ "$out" = "$expected" ] || fail "Herdr pane state $pane_state should map to $expected, got '$out'"
   done
 
@@ -540,6 +545,60 @@ test_sweep_noop_with_no_secondmate_meta() {
   pass "sweep: a silent no-op with no kind=secondmate meta present (a secondmate home's own natural scoping)"
 }
 
+test_sweep_preserves_unresolved_herdr_move() {
+  local w fb tmuxfb log out rc
+  w=$(new_world sweep-pending-herdr)
+  add_sm_home "$w" sm1 lab:w1:p1 pi
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  cat >> "$w/home/state/sm1.meta" <<EOF
+backend=herdr
+endpoint_task_id=sm1
+project=$w/sm1
+worktree=$w/sm1
+herdr_session=lab
+herdr_workspace_id=w1
+herdr_tab_id=w1:t1
+herdr_pane_id=w1:p1
+herdr_move={"task":"sm1","session":"lab","destination":"w2","identity":{"pane":"w1:p1","tab":"w1:t1","workspace":"w1","terminal":"retained-terminal"}}
+EOF
+  cp "$w/home/state/sm1.meta" "$w/before.meta"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_HERDR_CALL_LOG"
+case "$1 ${2:-}" in
+  '--version ') printf 'herdr 0.9.0\n' ;;
+  'status --json') printf '{"server":{"running":true}}\n' ;;
+  'pane get')
+    if [ "$3" = w2:p2 ]; then
+      printf '{"result":{"pane":{"pane_id":"w2:p2","terminal_id":"retained-terminal"}}}\n'
+    else
+      printf '{"error":{"code":"pane_not_found"}}\n'; exit 1
+    fi ;;
+  *) exit 90 ;;
+esac
+SH
+  chmod +x "$fb/herdr"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_HERDR_CALL_LOG="$log")
+  assert_contains "$out" 'SECONDMATE_LIVENESS: secondmate sm1: skipped: endpoint validation failed' \
+    'an unresolved move must stay outside automatic endpoint recovery'
+  cmp "$w/before.meta" "$w/home/state/sm1.meta" || fail 'startup changed the unresolved move record'
+  if grep -Eq '(^| )(new-window|kill-window|close|create|move|send-text|send-keys)( |$)' "$log"; then
+    fail "startup mutated a pending endpoint: $(cat "$log")"
+  fi
+  : > "$log"
+  rc=0
+  out=$(PATH="$tmuxfb:$fb:$BASE_PATH" FM_HOME="$w/home" FM_BACKEND=tmux \
+    FM_SPAWN_NO_GUARD=1 FM_SKIP_SECONDMATE_SYNC=1 FM_SKIP_SECONDMATE_INHERIT=1 \
+    FM_TMUX_CALL_LOG="$log" FM_HERDR_CALL_LOG="$log" \
+    "$ROOT/bin/fm-spawn.sh" sm1 --secondmate --harness codex --backend tmux 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'fresh spawn replaced a pending Herdr move'
+  assert_contains "$out" 'unresolved Herdr move' 'locked spawn admission must preserve the pending move'
+  cmp "$w/before.meta" "$w/home/state/sm1.meta" || fail 'fresh spawn changed the unresolved move record'
+  [ ! -s "$log" ] || fail "fresh spawn touched the endpoint before admission: $(cat "$log")"
+  pass 'pending Herdr moves survive startup recovery and locked fresh-spawn admission'
+}
+
 test_tmux_agent_state_classifies
 test_tmux_agent_state_rejects_malformed_targets_before_probe
 test_herdr_agent_state_preserves_husk_classifier
@@ -555,5 +614,6 @@ test_sweep_never_acts_on_unverified_harness_dead_reading
 test_sweep_converges_no_retouch_once_alive
 test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
+test_sweep_preserves_unresolved_herdr_move
 
 echo "# all fm-secondmate-liveness tests passed"

@@ -439,6 +439,10 @@ inbox_steer_check() {  # <window> <task>
       rec=${rec% *}
       ;;
   esac
+  if [ "$(fm_backend_target_of_meta "$STATE/$task.meta")" != "$w" ]; then
+    inbox_steer_escalate_unavailable "$w" "$task" "$rec"
+    return 0
+  fi
   backend=$(window_backend "$w")
   agent_state=$(fm_backend_agent_state "$backend" "$w" 2>/dev/null || true)
   case "$agent_state" in
@@ -692,7 +696,7 @@ recorded_windows() {
   local meta w seen=
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
-    w=$(fm_backend_target_of_meta "$meta")
+    w=$(fm_backend_recorded_target_of_meta "$meta")
     [ -n "$w" ] || continue
     case "$seen" in
       *"|$w|"*) continue ;;
@@ -2194,6 +2198,7 @@ EOF
     # Steering-inbox loss detection runs before the secondmate stale
     # exemption below, because a mate's steers land in an inbox too.
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
+    [ -z "$task" ] || [ "$(fm_backend_target_of_meta "$STATE/$task.meta")" = "$w" ] || continue
     key=$(window_key "$w")
     last=$(last_status_line "$STATE/$task.status")
     if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then

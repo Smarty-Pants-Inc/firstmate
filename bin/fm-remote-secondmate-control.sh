@@ -65,6 +65,8 @@ REMOTE_HERDR_SESSION=fm-remote
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# shellcheck source=bin/fm-backlog-transition-lib.sh
+. "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -87,7 +89,7 @@ remote_endpoint_load() {
   local id=$1 herdr_session
   REMOTE_ENDPOINT_ERROR=
   REMOTE_ENDPOINT_META=$(meta_path "$id")
-  if ! fm_backend_validate_task_endpoint "$REMOTE_ENDPOINT_META" "$id" 2>/dev/null; then
+  if ! fm_backend_validate_task_endpoint "$REMOTE_ENDPOINT_META" "$id" "${2:-}" 2>/dev/null; then
     REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint metadata is invalid; refusing access until it is explicitly migrated"
     return 1
   fi
@@ -112,7 +114,7 @@ remote_endpoint_load() {
 }
 
 remote_endpoint_require() {
-  remote_endpoint_load "$1" || die "$REMOTE_ENDPOINT_ERROR"
+  remote_endpoint_load "$@" || die "$REMOTE_ENDPOINT_ERROR"
 }
 
 state_value() { # <id>; prints recovery-grade state
@@ -180,6 +182,11 @@ cmd_launch() {
         return 0
         ;;
       dead)
+        if grep -q '^herdr_route=' "$meta"; then
+          cmd_relaunch "$id" "$harness" "$model" "$effort" || return 1
+          print_route "$id"
+          return
+        fi
         fm_backend_kill "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null \
           || die "could not remove the confirmed agent-less endpoint"
         ;;
@@ -403,7 +410,7 @@ cmd_retire() {
     return 0
   fi
   [ -z "$force" ] || [ "$force" = --force ] || usage
-  remote_endpoint_require "$id"
+  FM_DATA_OVERRIDE="$CONTROL_DATA" remote_endpoint_require "$id" "$CONTROL_STATE/$id.backlog-close"
   FM_HOME="$TARGET_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$TARGET_HOME/state" \
     FM_CONFIG_OVERRIDE="$TARGET_HOME/config" "$SCRIPT_DIR/fm-guard.sh" || true
   if [ -n "$force" ]; then

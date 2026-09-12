@@ -56,7 +56,18 @@ case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
-  send-keys) exit 0 ;;
+  send-keys)
+    if [ -n "${FM_FAKE_ALLOCATOR_LOG:-}" ]; then
+      for arg in "$@"; do
+        case "$arg" in
+          *treehouse*get*)
+            cd "$FM_FAKE_PROJECT" || exit 1
+            env -u TREEHOUSE_ROOT PATH="$FM_FAKE_PANE_BIN:$PATH" /bin/sh -c "$arg" || exit 1
+            ;;
+        esac
+      done
+    fi
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -221,6 +232,55 @@ test_primary_checkout_that_never_settles_fails_at_the_deadline() {
   pass "a pane stuck on the primary checkout fails loudly at the deadline"
 }
 
+# The new terminal has a different PATH and no allocator-root environment.
+# Execute the actual allocation command it receives, rather than asserting its text.
+test_managed_allocator_survives_new_shell_environment() {
+  local project rec id out status managed shadow pool configured log effective_root
+  for project in firstmate fm-deck; do
+    id="allocator-$project"
+    rec=$(make_settle_case "$id" "$id" 0)
+    read_settle_record "$rec"
+    managed="$TMP_ROOT/$id/managed bin's"
+    shadow="$TMP_ROOT/$id/pane-bin"
+    pool="$TMP_ROOT/$id/managed pool's"
+    log="$TMP_ROOT/$id/allocator.log"
+    mkdir -p "$managed" "$shadow" "$pool"
+    cat > "$managed/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -eu
+pool=$FM_FAKE_MANAGED_POOL
+[ "$1" = get ] || exit 1
+shift
+if [ "$#" -gt 0 ]; then
+  [ "$1" = --root ] && [ "$#" = 2 ] || exit 1
+  pool=$2
+fi
+printf '%s\n' "$pool" > "$FM_FAKE_ALLOCATOR_LOG"
+SH
+    cat > "$shadow/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'wrong-shell-default-pool' > "$FM_FAKE_ALLOCATOR_LOG"
+SH
+    chmod +x "$managed/treehouse" "$shadow/treehouse"
+    FAKEBIN_DIR="$managed:$FAKEBIN_DIR"
+    # First home uses the managed wrapper; the independent child also carries
+    # an explicit root which must survive the new terminal's cleared environment.
+    configured=
+    [ "$project" != fm-deck ] || configured="$pool/explicit root's"
+    out=$(TREEHOUSE_ROOT="$configured" FM_FAKE_MANAGED_POOL="$pool" \
+      FM_FAKE_ALLOCATOR_LOG="$log" FM_FAKE_PANE_BIN="$shadow" FM_FAKE_PROJECT="$PROJ_DIR" \
+      run_settle_spawn "$id")
+    status=$?
+    expect_code 0 "$status" "managed allocator spawn failed for $project"$'\n'"$out"
+    [ -f "$log" ] || fail "$project allocation command never executed"
+    effective_root=$(cat "$log")
+    [ "$effective_root" = "${configured:-$pool}" ] || fail "$project used '$effective_root', not its managed allocator pool"
+    assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" 'managed spawn lost its linked worktree'
+  done
+  pass 'both Git homes use the resolved managed allocator; explicit root survives shell PATH/environment drift'
+}
+
+test_managed_allocator_survives_new_shell_environment
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_read
 test_transient_primary_checkout_is_not_accepted

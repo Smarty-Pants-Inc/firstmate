@@ -81,9 +81,10 @@
 # in its worktree= or home=. One live path with two task records is the reuse
 # collision itself, whichever record is stale. The recorded endpoint's exact
 # task identity and the record's spawn incarnation are validated separately
-# before cleanup. Its current working directory is only incidental process
-# state: the same worker remains the owner after changing directory, so cwd can
-# never veto teardown of that exact recorded endpoint.
+# before cleanup. For ordinary endpoints, current cwd is incidental process
+# state and does not revoke ownership after a directory change. Moved and
+# enrolled Herdr endpoints additionally require the retained identity checks
+# owned by bin/fm-backend.sh's fm_backend_validate_task_endpoint.
 # The scan and destructive return hold a project-identity lock in the local root
 # Firstmate home's state directory, as resolved by bin/fm-wake-lib.sh's
 # fm_firstmate_root_home; a home seeded from another machine is its own local
@@ -897,12 +898,13 @@ else
 fi
 [ "$remote_teardown_rc" -eq 3 ] || exit "$remote_teardown_rc"
 
-# This is the first cleanup authorization check. It is metadata-only and must
-# complete before fm-guard, a backend command, file removal, branch deletion,
-# worktree return, registry change, or process termination can run.
-fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
+# This first cleanup authorization check includes read-only native verification
+# for retained Herdr identities and must complete before fm-guard, file removal,
+# branch deletion, worktree return, registry change, or process termination.
+fm_backend_validate_task_endpoint "$META" "$ID" "$STATE/$ID.backlog-close" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
+TEARDOWN_ENDPOINT_CLOSED=$FM_BACKEND_VALIDATED_CLOSED
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
 T_ORCA=
@@ -2679,7 +2681,8 @@ preflight_descendant_treehouse_slots() {
     if ! is_treehouse_pool_slot "$project" "$worktree"; then
       continue
     fi
-    fm_backend_validate_task_endpoint "$meta" "$task_id" || return 1
+    FM_HOME="${state%/state}" FM_DATA_OVERRIDE="${state%/state}/data" \
+      fm_backend_validate_task_endpoint "$meta" "$task_id" "$state/$task_id.backlog-close" || return 1
     require_exclusive_worktree_slot_record "$meta" "$task_id" "$state" "$worktree" || return 1
   done
 }
@@ -2691,7 +2694,8 @@ validate_firstmate_home_children_removal() {
   for child_meta in "$sub_state"/*.meta; do
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
-    fm_backend_validate_task_endpoint "$child_meta" "$child_id" || return 1
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+      fm_backend_validate_task_endpoint "$child_meta" "$child_id" "$sub_state/$child_id.backlog-close" || return 1
     validate_pr_poll_cleanup "$sub_state" "$child_id" || return 1
     child_wt=$(meta_value "$child_meta" worktree)
     child_kind=$(meta_value "$child_meta" kind)
@@ -2834,7 +2838,8 @@ preflight_firstmate_home_herdr_children() {  # <home>
   for child_meta in "$sub_state"/*.meta; do
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
-    fm_backend_validate_task_endpoint "$child_meta" "$child_id" || return 1
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+      fm_backend_validate_task_endpoint "$child_meta" "$child_id" "$sub_state/$child_id.backlog-close" || return 1
     child_backend=$FM_BACKEND_VALIDATED_BACKEND
     child_target=$FM_BACKEND_VALIDATED_TARGET
     if [ "$child_backend" = herdr ]; then
@@ -2853,6 +2858,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
 
 cleanup_firstmate_home_children() {
   local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen
+  local child_closed child_close_marker child_spawn_gen
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -2862,12 +2868,12 @@ cleanup_firstmate_home_children() {
     child_proj=$(meta_value "$child_meta" project)
     child_kind=$(meta_value "$child_meta" kind)
     [ -n "$child_kind" ] || child_kind=ship
-    child_backend=$(fm_backend_of_meta "$child_meta")
-    if [ "$child_backend" = orca ]; then
-      child_t=$(meta_value "$child_meta" terminal)
-    else
-      child_t=$(fm_backend_target_of_meta "$child_meta")
-    fi
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+      fm_backend_validate_task_endpoint "$child_meta" "$child_id" "$sub_state/$child_id.backlog-close" || return 1
+    child_backend=$FM_BACKEND_VALIDATED_BACKEND
+    child_t=$FM_BACKEND_VALIDATED_TARGET
+    child_closed=$FM_BACKEND_VALIDATED_CLOSED
+    child_close_marker=
     if [ "$child_backend" = orca ] && [ "$child_kind" != secondmate ]; then
       child_orca_worktree_id=$(require_orca_worktree_id "$child_meta") || return 1
       if [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
@@ -2881,7 +2887,20 @@ cleanup_firstmate_home_children() {
           echo "error: herdr session presentation lock is not held for child $child_id; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
         fi
-        fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
+        if grep -Eq '^herdr_(enrollment|route)=' "$child_meta"; then
+          fm_backlog_meta_spawn_gen "$child_meta" "$sub_state" || return 1
+          child_spawn_gen=$FM_BACKLOG_META_SPAWN_GEN
+          child_close_marker=$(fm_backlog_close_marker_path "$sub_state" "$child_id") || return 1
+          if [ -e "$child_close_marker" ] || [ -L "$child_close_marker" ]; then
+            fm_backlog_close_marker_validate "$child_close_marker" "$home/data" "$child_id" "$sub_state" || return 1
+            [ "$FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN" = "$child_spawn_gen" ] || return 1
+          else
+            fm_backlog_close_marker_write "$sub_state" "$child_id" "$home/data" "$child_spawn_gen" || return 1
+          fi
+        fi
+        if [ "$child_closed" = 0 ]; then
+          fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
+        fi
         if ! fm_backend_herdr_endpoint_confirmed_gone "$child_t"; then
           echo "error: herdr pane $child_t for child $child_id is not confirmed gone; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
@@ -2937,6 +2956,9 @@ cleanup_firstmate_home_children() {
     retire_busy_state "$sub_state" "$child_id" "$child_busy_gen" || return 1
     status_retire_presentation_task "$sub_state" "$child_id" || return 1
     fm_backlog_atomic_transition remove "$sub_state/$child_id.meta" "task record" "$sub_state" || return 1
+    if [ -n "$child_close_marker" ]; then
+      fm_backlog_close_marker_remove "$child_close_marker" "$sub_state" || return 1
+    fi
     rm -f "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.progress" \
       "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.omp-ext.ts" \
       "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
@@ -3094,6 +3116,10 @@ TEARDOWN_HERDR_SESSION=
 TEARDOWN_HERDR_PANE=
 if [ "$BACKEND" = herdr ]; then
   teardown_herdr_preflight_target "$T" "$ID" || exit 1
+  if [ "$TEARDOWN_ENDPOINT_CLOSED" = 1 ] && ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+    echo "REFUSED: task $ID's closed endpoint is no longer confirmed absent; preserving its teardown record." >&2
+    exit 1
+  fi
   fm_backend_herdr_parse_target "$T" || exit 1
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
@@ -3104,6 +3130,7 @@ BACKLOG_TRANSITION=$TEARDOWN_BACKLOG_TRANSITION
 BACKLOG_TRANSITION_FLAGS=()
 [ "$BACKLOG_TRANSITION" = close ] || BACKLOG_TRANSITION_FLAGS=(--retain)
 BACKLOG_SKIP_REASON=
+TEARDOWN_CLOSE_MARKER=''
 if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ]; then
   backlog_done_args || {
     echo "error: the pending backlog $BACKLOG_TRANSITION for $ID is not replayable; refusing destructive teardown" >&2
@@ -3174,6 +3201,17 @@ else
     BACKLOG_SKIP_REASON="Orca cleanup recovery is not a launched backlog worker"
   else
     BACKLOG_SKIP_REASON=$TEARDOWN_BACKLOG_SKIP_REASON
+  fi
+  if [ "$BACKEND" = herdr ] && grep -Eq '^herdr_(enrollment|route)=' "$META"; then
+    fm_backlog_meta_spawn_gen "$META" "$STATE" || exit 1
+    META_SPAWN_GEN=$FM_BACKLOG_META_SPAWN_GEN
+    TEARDOWN_CLOSE_MARKER=$(fm_backlog_close_marker_path "$STATE" "$ID") || exit 1
+    if [ -e "$TEARDOWN_CLOSE_MARKER" ] || [ -L "$TEARDOWN_CLOSE_MARKER" ]; then
+      fm_backlog_close_marker_validate "$TEARDOWN_CLOSE_MARKER" "$DATA" "$ID" "$STATE" || exit 1
+      [ "$FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN" = "$META_SPAWN_GEN" ] || exit 1
+    else
+      fm_backlog_close_marker_write "$STATE" "$ID" "$DATA" "$META_SPAWN_GEN" || exit 1
+    fi
   fi
 fi
 
@@ -3274,6 +3312,8 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   else
     echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
   fi
+elif [ "$BACKEND" = herdr ] && [ "$TEARDOWN_ENDPOINT_CLOSED" = 1 ]; then
+  :
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
     fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
@@ -3383,6 +3423,9 @@ else
     META_LOCK_HELD=0
     echo "error: $ID's endpoint and local copy are cleaned up, but its task record could not be removed ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 1
+  fi
+  if [ -n "$TEARDOWN_CLOSE_MARKER" ]; then
+    fm_backlog_close_marker_remove "$TEARDOWN_CLOSE_MARKER" "$STATE" || exit 1
   fi
 fi
 fm_lock_release "$META_LOCK"

@@ -42,7 +42,7 @@
 #              already recorded for it.
 #              A prefixed raw-command basename cannot reconstruct its launch
 #              command, so relaunch requires an explicit --harness for it.
-#              --note is required for a ship or scout, whose replacement
+#              --note is required for a ship or scout, whose ordinary replacement
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
@@ -58,10 +58,10 @@
 # endpoint, or discarding work stays with bin/fm-teardown.sh, which owns the
 # landed-work test.
 #
+# docs/herdr-backend.md (Retained endpoint enrollment) owns the narrow
+# history-preserving relaunch exception; the receiving note remains required.
 # `resume` is not a verb: it is not deterministic across the verified adapters
-# (bin/fm-control-lib.sh's header owns that reasoning). `relaunch` covers the
-# same need for every adapter because the brief on disk, not a harness-private
-# session, is the durable instruction.
+# (bin/fm-control-lib.sh's header owns that reasoning).
 #
 # Targeting is EXACT: only a bare task id with a state/<id>.meta record in
 # THIS home is accepted, and the record must pass the shared endpoint-identity
@@ -74,8 +74,8 @@
 # host, so no postcondition this plane verifies could be read for it here.
 #
 # Fail-closed boundaries:
-#   - An unverified harness, or a harness whose control mechanics are unknown,
-#     is refused rather than guessed at.
+#   - Verbs requiring harness keybindings refuse an unverified harness or
+#     unknown control mechanics rather than guessing.
 #   - A backend that cannot deliver the harness's interrupt key is refused
 #     (Orca's terminal API has no Escape).
 #   - `exit` and `relaunch` require a backend with a recovery-grade agent-state
@@ -84,6 +84,14 @@
 #     than reported as successful blind.
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts.
+#
+# Herdr layout control (owning host/home only, no agent restart):
+#   fm-control.sh <id> move --workspace <id> --expected-window <session:pane>
+#   fm-control.sh <id> reconcile-move
+# move requires an existing destination and a remaining source terminal.
+# It publishes a pending barrier before one native pane.move. Reconcile only
+# verifies that move's destination; it never repeats a move or clears an
+# unknown outcome. Backend mechanics: bin/backends/herdr-pane-move.sh.
 #
 # Environment knobs (all bounded waits, seconds):
 #   FM_CONTROL_POLL              poll interval for postcondition waits (0.5)
@@ -150,6 +158,7 @@ die() {  # <message>
 
 CONTROL_LOCK=
 CONTROL_LOCK_HELD=0
+MOVE_META_LOCK=
 RELAUNCH_ACTIVE=0
 RELAUNCH_PHASE=start
 
@@ -158,6 +167,9 @@ control_cleanup() {
   if [ "$RELAUNCH_ACTIVE" = 1 ] \
      && declare -F relaunch_rollback >/dev/null 2>&1; then
     relaunch_rollback || true
+  fi
+  if [ -n "$MOVE_META_LOCK" ]; then
+    fm_lock_release "$MOVE_META_LOCK" || true
   fi
   if [ "$CONTROL_LOCK_HELD" = 1 ]; then
     CONTROL_LOCK_HELD=0
@@ -179,7 +191,7 @@ shift 2
 if ! fm_control_verb_allowed "$VERB"; then
   {
     if [ "$VERB" = resume ]; then
-      echo "error: 'resume' is not a control verb: resuming an exited agent is not deterministic across the verified adapters (codex and grok need a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, and kimi have no verified pane-resume contract). Use 'relaunch', which carries the brief plus a progress note into a fresh agent on any adapter."
+      echo "error: 'resume' is not a control verb: resuming an exited agent is not deterministic across the verified adapters (codex and grok need a session id printed at exit, opencode continues the most recent session for the cwd, and no adapter may infer an unrecorded history). Use 'relaunch', which carries the brief plus a progress note into an agent. For retained Pi enrollment, relaunch reopens the recorded exact history; ordinary tasks start fresh."
     else
       echo "error: '$VERB' is not a control verb"
     fi
@@ -197,6 +209,8 @@ MODEL_SET=0
 EFFORT_SET=0
 NOTE=
 NOTE_SET=0
+MOVE_WORKSPACE=
+MOVE_EXPECTED=
 control_want_value=
 for control_arg in "$@"; do
   if [ -n "$control_want_value" ]; then
@@ -204,6 +218,8 @@ for control_arg in "$@"; do
       --*) die "--$control_want_value requires a value" ;;
     esac
     case "$control_want_value" in
+      workspace) MOVE_WORKSPACE=$control_arg ;;
+      expected_window) MOVE_EXPECTED=$control_arg ;;
       harness) NEW_HARNESS=$control_arg; HARNESS_SET=1 ;;
       model) NEW_MODEL=$control_arg; MODEL_SET=1 ;;
       effort) NEW_EFFORT=$control_arg; EFFORT_SET=1 ;;
@@ -218,6 +234,8 @@ for control_arg in "$@"; do
     continue
   fi
   case "$control_arg" in
+    --workspace) control_want_value=workspace ;;
+    --expected-window) control_want_value=expected_window ;;
     --harness) control_want_value=harness ;;
     --harness=*) NEW_HARNESS=${control_arg#--harness=}; HARNESS_SET=1 ;;
     --model) control_want_value=model ;;
@@ -250,6 +268,15 @@ fi
 case "$NEW_EFFORT" in
   ''|default|low|medium|high|xhigh|max|ultra) ;;
   *) die "--effort must be one of default, low, medium, high, xhigh, max, ultra" ;;
+esac
+
+case "$VERB" in
+  move)
+    [ -n "$MOVE_WORKSPACE" ] && [ -n "$MOVE_EXPECTED" ] \
+      || die "move requires --workspace and --expected-window"
+    fm_backend_endpoint_atom_valid "$MOVE_WORKSPACE" || die "invalid destination workspace"
+    ;;
+  *) [ -z "$MOVE_WORKSPACE$MOVE_EXPECTED" ] || die "move options apply only to move" ;;
 esac
 
 # --- exact task-id resolution ----------------------------------------------
@@ -296,6 +323,23 @@ fi
 if [ -n "$(fm_meta_get "$META" remote_host)" ]; then
   die "task $ID is a remotely placed secondmate on $(fm_meta_get "$META" remote_host); its agent runs outside this home, so no lifecycle action here could verify that it interrupted, stopped, or came back. Drive its lifecycle on that host, and reconcile it through the secondmate recovery path rather than this plane"
 fi
+
+case "$VERB" in
+  move|reconcile-move)
+    if grep -q '^herdr_enrollment=' "$META"; then
+      die "retained enrollment binds the original endpoint; moving it requires separately authorized custody reconciliation"
+    fi
+    [ "$(fm_backend_meta_exact_value "$META" backend)" = herdr ] || die "move is supported only for recorded Herdr endpoints"
+    MOVE_LOCK_PATH=$(fm_meta_lock_path "$META") || exit 1
+    fm_lock_try_acquire "$MOVE_LOCK_PATH" || die "task endpoint metadata is busy"
+    MOVE_META_LOCK=$MOVE_LOCK_PATH
+    fm_backend_source herdr || exit 1
+    # shellcheck source=bin/backends/herdr-pane-move.sh
+    . "$SCRIPT_DIR/backends/herdr-pane-move.sh"
+    fm_backend_herdr_move_task "$META" "$ID" "$MOVE_WORKSPACE" "$MOVE_EXPECTED" "$VERB"
+    exit $?
+    ;;
+esac
 
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
@@ -661,6 +705,9 @@ resolve_relaunch_profile() {
   # transaction, where nothing has changed yet.
   fm_control_harness_supports_kind "$TARGET_HARNESS" "$KIND" \
     || die "'$TARGET_HARNESS' is not verified to run a $KIND task, so relaunching $ID onto it would stop the running agent for a launch that must be refused; choose an adapter verified for this kind"
+  if grep -q '^herdr_enrollment=' "$META" && [ "$TARGET_HARNESS" != pi ]; then
+    die "retained enrollment requires its exact Pi history; refusing a replacement runtime before stopping anything"
+  fi
   # A model or effort chosen for the previous harness does not transfer to a
   # different one, so an explicit harness change resets both axes unless the
   # caller names them too.
@@ -791,6 +838,10 @@ do_relaunch() {
   local -a spawn_args
 
   require_state_verified_backend relaunch
+  if [ "$BACKEND" = herdr ]; then
+    fm_backend_source herdr || exit 1
+    fm_backend_herdr_relaunch_identity "$META" || exit 1
+  fi
   resolve_relaunch_profile
 
   case "$KIND" in

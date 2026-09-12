@@ -355,6 +355,21 @@ fm_backend_of_meta() {  # <meta-file>
 }
 
 fm_backend_target_of_meta() {  # <meta-file>
+  local meta=$1 backend id
+  # An uncertain relocation has no usable endpoint until the owning home's
+  # reconcile-move verifies its destination. Never route through the old ID.
+  [ -z "$(fm_meta_get "$meta" herdr_move)" ] || return 0
+  backend=$(fm_backend_of_meta "$meta")
+  if [ "$backend" = herdr ] && grep -Eq '^herdr_(enrollment|route)=' "$meta"; then
+    id=${meta##*/}
+    fm_backend_validate_task_endpoint "$meta" "${id%.meta}" || return 0
+    printf '%s' "$FM_BACKEND_VALIDATED_TARGET"
+    return 0
+  fi
+  fm_backend_recorded_target_of_meta "$meta"
+}
+
+fm_backend_recorded_target_of_meta() {
   local meta=$1 backend terminal window
   backend=$(fm_backend_of_meta "$meta")
   if [ "$backend" = orca ]; then
@@ -365,14 +380,23 @@ fm_backend_target_of_meta() {  # <meta-file>
   [ -n "$window" ] && printf '%s' "$window"
 }
 
-# fm_backend_validate_task_endpoint: validate a task cleanup record entirely
-# from its durable metadata before any runtime command or cleanup mutation.
+# fm_backend_validate_task_endpoint: validate a task record before cleanup
+# mutations. Ordinary records use durable metadata; moved or enrolled Herdr
+# records also require their live native identity. Callers must supply the
+# established owning FM_HOME and configured data context, including descendants.
 # The validation binds the exact task id, selected backend, target, project,
 # and worktree. New non-tmux records carry endpoint_task_id because their
 # opaque runtime ids do not encode the task label. Legacy tmux records remain
 # valid only when their window name itself is exactly fm-<task-id>.
+# Only teardown, its recursive cleanup, and host-local remote-retirement admission
+# may supply the exact state/<id>.backlog-close marker to retry a moved or enrolled
+# endpoint already positively confirmed absent. Remote retirement supplies its
+# CONTROL_DATA binding; ordinary control still requires live identity. The marker's
+# validated task, data-root and spawn-generation binding must match; reused or unreadable
+# endpoints never qualify. This exception authorizes no input or source discard.
 # On success, sets FM_BACKEND_VALIDATED_BACKEND and
-# FM_BACKEND_VALIDATED_TARGET. On failure, prints one refusal and returns 1.
+# FM_BACKEND_VALIDATED_TARGET, plus FM_BACKEND_VALIDATED_CLOSED for that retry.
+# On failure, prints a refusal and returns 1.
 fm_backend_meta_exact_value() {  # <meta-file> <key>
   local meta=$1 key=$2 count value
   count=$(grep -c "^$key=" "$meta" 2>/dev/null || true)
@@ -388,11 +412,16 @@ fm_backend_endpoint_atom_valid() {  # <value>
   esac
 }
 
-fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
+fm_backend_validate_task_endpoint() {  # <meta-file> <task-id> [teardown-close-marker]
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
-  local session pane recorded_session workspace tab terminal worktree_id surface
+  local session pane recorded_session workspace tab terminal worktree_id surface endpoint_closed=0
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
+  FM_BACKEND_VALIDATED_CLOSED=0
+  if [ -n "$(fm_meta_get "$meta" herdr_move)" ]; then
+    echo "REFUSED: task $id has an unresolved Herdr move; reconcile its endpoint before control, recovery or cleanup." >&2
+    return 1
+  fi
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
     echo "REFUSED: task $id has no regular endpoint metadata at $meta; preserving task state." >&2
     return 1
@@ -474,6 +503,57 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         echo "REFUSED: Herdr endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
         return 1
       fi
+      if [ -n "${3:-}" ] && grep -Eq '^herdr_(enrollment|route)=' "$meta"; then
+        fm_backend_source herdr || return 1
+        if fm_backend_herdr_endpoint_confirmed_gone "$window"; then
+          if [ "$3" != "${meta%/*}/$id.backlog-close" ] \
+            || ! declare -F fm_backlog_close_marker_validate >/dev/null 2>&1 \
+            || ! fm_backlog_close_marker_validate "$3" "${FM_DATA_OVERRIDE:-$FM_HOME/data}" "$id" "${meta%/*}" \
+            || ! fm_backlog_meta_spawn_gen "$meta" "${meta%/*}" \
+            || [ "$FM_BACKLOG_META_SPAWN_GEN" != "$FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN" ]; then
+            echo "REFUSED: task $id has no matching teardown close marker for its absent endpoint." >&2
+            return 1
+          fi
+          endpoint_closed=1
+        fi
+      fi
+      if grep -q '^herdr_enrollment=' "$meta"; then
+        local enrollment history history_id parent_workspace
+        enrollment=$(fm_backend_meta_exact_value "$meta" herdr_enrollment) || return 1
+        history=$(fm_backend_meta_exact_value "$meta" pi_session_file) || return 1
+        history_id=$(fm_backend_meta_exact_value "$meta" pi_session_id) || return 1
+        parent_workspace=$(fm_backend_meta_exact_value "$meta" herdr_parent_workspace_id) || return 1
+        jq -en --argjson e "$enrollment" --arg home "$FM_HOME" --arg id "$id" \
+          --arg project "$project" --arg worktree "$worktree" --arg session "$recorded_session" \
+          --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" \
+          --arg history "$history" --arg history_id "$history_id" --arg parent "$parent_workspace" '
+          $e.schema == "fm-herdr-enrollment.v1" and $e.home == $home and $e.task == $id
+          and $e.project == $project and $e.worktree == $worktree and $e.session == $session
+          and $e.workspace == $workspace and $e.tab == $tab and $e.pane == $pane
+          and $e.pi_session_file == $history and $e.pi_session_id == $history_id
+          and $e.parent_workspace == $parent' >/dev/null || {
+          echo "REFUSED: task $id has a conflicting retained enrollment binding." >&2
+          return 1
+        }
+        fm_backend_source herdr || return 1
+        # Herdr helpers are canonical lint roots, like the adapters in fm_backend_source.
+        # shellcheck source=/dev/null
+        . "$FM_BACKEND_LIB_DIR/backends/herdr-enroll.sh"
+        if [ "$endpoint_closed" = 0 ] && { ! fm_backend_herdr_enrollment_source "$enrollment" allow-dirty \
+          || ! fm_backend_herdr_enrollment_identity "$enrollment"; }; then
+          echo "REFUSED: retained task $id no longer has its exact enrolled native identity." >&2
+          return 1
+        fi
+      fi
+      if grep -q '^herdr_route=' "$meta"; then
+        fm_backend_source herdr || return 1
+        # shellcheck source=/dev/null
+        . "$FM_BACKEND_LIB_DIR/backends/herdr-pane-move.sh"
+        fm_backend_herdr_route_identity "$meta" "$id" "$endpoint_closed" || {
+          echo "REFUSED: task $id no longer has its recorded moved endpoint identity." >&2
+          return 1
+        }
+      fi
       ;;
     zellij)
       [ "$binding" = "$id" ] || {
@@ -532,21 +612,47 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
   FM_BACKEND_VALIDATED_BACKEND=$backend
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
-  FM_BACKEND_VALIDATED_TARGET=$window
+  FM_BACKEND_VALIDATED_TARGET=$window FM_BACKEND_VALIDATED_CLOSED=$endpoint_closed
   return 0
 }
 
 fm_backend_meta_for_window() {  # <target> <state-dir>
-  local target=$1 state=$2 meta window terminal
+  local target=$1 state=$2 meta window terminal route matched='' found='' herdr='' former=''
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
     window=$(fm_meta_get "$meta" window)
     terminal=$(fm_meta_get "$meta" terminal)
-    { [ -n "$window" ] && [ "$window" = "$target" ]; } || { [ -n "$terminal" ] && [ "$terminal" = "$target" ]; } || continue
-    printf '%s' "$meta"
-    return 0
+    matched=
+    if { [ -n "$window" ] && [ "$window" = "$target" ]; } || { [ -n "$terminal" ] && [ "$terminal" = "$target" ]; }; then
+      matched=1
+    fi
+    if [ "$(fm_backend_of_meta "$meta")" = herdr ] && grep -q '^herdr_route=' "$meta"; then
+      route=$(fm_backend_meta_exact_value "$meta" herdr_route) || return 2
+      printf '%s' "$route" | jq -e '.former | type == "array"' >/dev/null 2>&1 || return 2
+      if printf '%s' "$route" | jq -e --arg target "$target" '.former | index($target) != null' >/dev/null; then
+        matched=1
+        [ "$window" = "$target" ] || former=$meta
+      fi
+    fi
+    [ -n "$matched" ] || continue
+    [ "$(fm_backend_of_meta "$meta")" != herdr ] || herdr=1
+    if [ -n "$found" ] && [ -n "$herdr" ]; then
+      echo "REFUSED: ambiguous Herdr selector '$target' has multiple task claims." >&2
+      return 2
+    fi
+    [ -n "$found" ] || found=$meta
   done
-  return 1
+  [ -n "$found" ] || return 1
+  if [ -n "$former" ]; then
+    fm_backend_source herdr || return 2
+    # shellcheck source=/dev/null
+    . "$FM_BACKEND_LIB_DIR/backends/herdr-pane-move.sh"
+    fm_backend_herdr_route_selector "$found" "$target" || {
+      echo "REFUSED: former Herdr selector '$target' no longer has an exact task binding." >&2
+      return 2
+    }
+  fi
+  printf '%s' "$found"
 }
 
 fm_backend_task_id_for_selector() {  # <raw-target> <state-dir>
@@ -639,26 +745,23 @@ fm_backend_source() {  # <name>
   esac
 }
 
-# fm_backend_resolve_selector: resolve a raw fm-send.sh/fm-peek.sh style
-# selector to a live session-provider target. Four forms, in order:
-#   target with ":"   used as-is (the escape hatch for a window/pane outside
-#                      this firstmate home) - backend-independent, a literal string.
-#   exact task id      routed through <state-dir>/<id>.meta's backend target
-#                      (`window=` normally, `terminal=` for Orca) -
-#                      backend-independent, a stored value, NOT re-verified
-#                      against a live backend inventory (matches today's
-#                      behavior: tmux window names can be trusted from meta
-#                      without a live re-check).
-#   "fm-<id>"          legacy task window label fallback routed through
-#                      <state-dir>/<id>.meta when no exact
-#                      <state-dir>/fm-<id>.meta exists.
-#   anything else      first matched against recorded `window=`/`terminal=`
-#                      metadata, then treated as an ad hoc bare window name and
-#                      resolved by searching the legacy tmux live inventory.
+# fm_backend_resolve_selector implements the task-selector vocabulary owned by
+# docs/configuration.md (Runtime backend). A matched explicit or former selector
+# cannot bypass its owning record's pending-move or retained-identity checks.
+# Only an unclaimed explicit target remains the outside-home escape hatch.
 fm_backend_resolve_selector() {  # <raw-target> <state-dir>
-  local raw=$1 state=$2 meta window
+  local raw=$1 state=$2 meta window rc
   case "$raw" in
     *:*)
+      rc=0
+      meta=$(fm_backend_meta_for_window "$raw" "$state") || rc=$?
+      [ "$rc" -ne 2 ] || return 1
+      if [ -n "$meta" ]; then
+        window=$(fm_backend_target_of_meta "$meta")
+        [ -n "$window" ] || return 1
+        printf '%s' "$window"
+        return 0
+      fi
       printf '%s' "$raw"
       return 0
       ;;
@@ -676,7 +779,9 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
       return 1
       ;;
     *)
-      meta=$(fm_backend_meta_for_window "$raw" "$state" 2>/dev/null || true)
+      rc=0
+      meta=$(fm_backend_meta_for_window "$raw" "$state") || rc=$?
+      [ "$rc" -ne 2 ] || return 1
       if [ -n "$meta" ]; then
         window=$(fm_backend_target_of_meta "$meta")
         [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }

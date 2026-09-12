@@ -42,7 +42,7 @@ The tool reference records repeat, acknowledgement, and clearing behavior, while
 
 Native resume availability and form belong solely to the selected tool reference.
 Use native resume only when both that reference and the recovery procedure call for it.
-Deterministic relaunch instead trusts instructions on disk, not a private session.
+Managed relaunch and its retained-history exception follow the [control-plane contract](../../../../../docs/agent-control.md#transactional-relaunch).
 
 `../stuck-crewmate-recovery/SKILL.md` owns worker recovery and `../secondmate-provisioning/SKILL.md` owns secondmate recovery; both preserve recorded work.
 The router's recovery scenarios select the additional common references for replacement profiles and secondmates.

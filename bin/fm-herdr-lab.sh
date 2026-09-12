@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Provision and operate an isolated Herdr lab session without risking the live
-# default session.
+# protected fleet session.
 #
 # Usage:
 #   fm-herdr-lab.sh name <label>
@@ -21,8 +21,12 @@
 # delete is available only through teardown.
 # Both paths perform a fresh refuse-default check immediately before each
 # destructive call.
-# Provision records the running default session as a fleet-state tripwire and
-# teardown requires that record to be identical afterward.
+# FM_HERDR_LAB_PROTECTED_SESSION selects the exact running fleet (default:
+# default). It is never a lab target. Provision records it as a fleet-state
+# tripwire; stop/delete revalidate it and teardown requires it unchanged.
+# Keep the same explicit selection for the whole lab lifecycle; ambient
+# HERDR_SESSION never selects the protected fleet. The tripwire covers native
+# name/default/running/socket identity, not fleet processes or workspace layout.
 set -u
 
 fm_herdr_lab_error() {
@@ -31,6 +35,10 @@ fm_herdr_lab_error() {
 
 fm_herdr_lab_validate_name() { # <session>
   local name=${1:-}
+  if [ "$name" = "${FM_HERDR_LAB_PROTECTED_SESSION-default}" ]; then
+    fm_herdr_lab_error "refusing protected fleet session '$name'"
+    return 1
+  fi
   [[ "$name" =~ ^fm-lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] && return 0
   case "$name" in
     default) fm_herdr_lab_error "refusing session name 'default'" ;;
@@ -58,21 +66,31 @@ fm_herdr_lab_session_list() { # <session>
   fm_herdr_lab_raw "$1" session list --json
 }
 
-fm_herdr_lab_fleet_state() { # <session>
-  local name=$1 sessions snapshot
-  sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
-    fm_herdr_lab_error "cannot read Herdr sessions for the fleet-state tripwire"
+fm_herdr_lab_fleet_state() { # <session> [session-list JSON]
+  local name=$1 sessions=${2-} snapshot protected=${FM_HERDR_LAB_PROTECTED_SESSION-default}
+  [[ "$protected" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || {
+    fm_herdr_lab_error "invalid protected fleet session selection"
     return 1
   }
-  snapshot=$(printf '%s' "$sessions" | jq -c '
-    [.sessions[]? | select(.default == true)]
-    | if length == 1 and .[0].name == "default" and .[0].running == true
-      then .[0] | {name, default, running, socket_path}
-      else empty
-      end
-  ' 2>/dev/null)
+  if [ "$#" -lt 2 ]; then
+    sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
+      fm_herdr_lab_error "cannot read Herdr sessions for the fleet-state tripwire"
+      return 1
+    }
+  fi
+  snapshot=$(printf '%s' "$sessions" | jq -cse --arg protected "$protected" '
+    select(length == 1) | .[0].sessions as $sessions
+    | [$sessions[] | select(.name == $protected)]
+    | select(length == 1) | .[0] as $fleet
+    | select($fleet.running == true
+        and ($fleet.default == ($protected == "default"))
+        and ($fleet.socket_path | type == "string" and length > 0)
+        and ([$sessions[] | select(.socket_path == $fleet.socket_path)] | length == 1)
+        and ($protected != "default" or ([$sessions[] | select(.default == true)] | length == 1)))
+    | $fleet | {name, default, running, socket_path}
+  ' 2>/dev/null) || snapshot=
   [ -n "$snapshot" ] || {
-    fm_herdr_lab_error "fleet-state tripwire requires exactly one running default session"
+    fm_herdr_lab_error "fleet-state tripwire requires exactly one running protected session '$protected' with an unambiguous identity"
     return 1
   }
   printf '%s\n' "$snapshot"
@@ -113,8 +131,9 @@ fm_herdr_lab_refuse_if_default() { # <session>
     fm_herdr_lab_error "refusing destructive call because session list failed"
     return 1
   }
+  fm_herdr_lab_check_tripwire "$name" "$info" || return 1
   flag=$(printf '%s' "$info" | jq -r --arg name "$name" \
-    '.sessions[]? | select(.name == $name) | .default' 2>/dev/null)
+    '[.sessions[]? | select(.name == $name)] | select(length == 1) | .[0].default' 2>/dev/null)
   [ "$flag" = false ] && return 0
   fm_herdr_lab_error "refusing destructive call for '$name': session is absent or default (default=${flag:-<not found>})"
   return 1
@@ -150,6 +169,7 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
       return 1
       ;;
   esac
+  fm_herdr_lab_check_tripwire "$name" || return 1
   fm_herdr_lab_raw "$name" "$@"
 }
 
@@ -217,7 +237,7 @@ fm_herdr_lab_provision() { # <session>
   return 1
 }
 
-fm_herdr_lab_check_tripwire() { # <session>
+fm_herdr_lab_check_tripwire() { # <session> [session-list JSON]
   local name=$1 tripwire before after
   tripwire=$(fm_herdr_lab_tripwire_path "$name")
   [ -f "$tripwire" ] || {
@@ -225,9 +245,9 @@ fm_herdr_lab_check_tripwire() { # <session>
     return 1
   }
   before=$(cat "$tripwire")
-  after=$(fm_herdr_lab_fleet_state "$name") || return 1
+  after=$(fm_herdr_lab_fleet_state "$@") || return 1
   [ "$before" = "$after" ] || {
-    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: default session changed during lab work"
+    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: protected session changed during lab work"
     fm_herdr_lab_error "before: $before"
     fm_herdr_lab_error "after:  $after"
     return 1
@@ -299,7 +319,7 @@ fm_herdr_lab_name() { # <label>
 }
 
 fm_herdr_lab_usage() {
-  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
 }
 
 fm_herdr_lab_main() {

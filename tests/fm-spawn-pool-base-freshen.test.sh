@@ -384,6 +384,174 @@ test_unreachable_origin_refuses_stale_pool_base() {
   pass "an unreachable origin refuses a potentially stale pooled worktree"
 }
 
+test_projected_allocation_contract() (
+  local refusal=$1 rec id out status pid='' journal preference
+  trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
+  id="pool-projected-$refusal"
+  rec=$(make_case "projected-$refusal" "$id")
+  read_case_record "$rec"
+  if [ "$refusal" = fetch ]; then
+    git -C "$POOL_DIR" remote set-url origin "file://$CASE_DIR/missing-origin.git"
+  else
+    git -C "$POOL_DIR" remote remove origin
+  fi
+  printf 'on\n' > "$HOME_DIR/config/herdr-presentation-spaces"
+  [ "$refusal" != presentation-off ] || printf 'off\n' > "$HOME_DIR/config/herdr-presentation-spaces"
+  mkfifo "$CASE_DIR/input"
+  bash -c 'cd "$1"; exec 3<>"$2"; printf ready > "$3"; read -r unused <&3' \
+    shell "$POOL_DIR" "$CASE_DIR/input" "$CASE_DIR/ready" &
+  pid=$!
+  for _ in {1..100}; do [ ! -f "$CASE_DIR/ready" ] || break; sleep .01; done
+  [ -f "$CASE_DIR/ready" ] || fail 'allocation shell did not start'
+  export FM_TEST_HERDR_CASE="$CASE_DIR" FM_TEST_HERDR_PID="$pid" HERDR_SESSION=allocation-test
+  export FM_TEST_HERDR_REFUSAL="$refusal"
+  unset HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET HERDR_SOCKET_PATH
+  cat > "$FAKEBIN_DIR/herdr" <<'PY'
+#!/usr/bin/env python3
+import json, os, pathlib, signal, sys
+root = pathlib.Path(os.environ['FM_TEST_HERDR_CASE'])
+path = root / 'endpoint.json'
+state = json.loads(path.read_text()) if path.exists() else dict(panes={}, tabs={}, allocated=False)
+args = sys.argv[1:]
+with (root / 'herdr.log').open('a') as log:
+    log.write(json.dumps(args) + '\n')
+def option(name):
+    return args[args.index(name) + 1]
+def reply(**result):
+    print(json.dumps(dict(result=result)))
+def absent():
+    print(json.dumps(dict(error=dict(code='pane_not_found'))), file=sys.stderr)
+    sys.exit(1)
+command = args[:2]
+refusal = os.environ['FM_TEST_HERDR_REFUSAL']
+if args[0] == 'status':
+    print(json.dumps(dict(client=dict(protocol=14, version='0.8.0'), server=dict(running=True))))
+elif command == ['session', 'list']:
+    print(json.dumps(dict(sessions=[dict(name='allocation-test', running=True, socket_path=str(root/'herdr.sock'))])))
+elif command == ['workspace', 'list']:
+    spaces = [dict(workspace_id='w1', label='firstmate', focused=True, active_tab_id='w1:t1')]
+    if 'label' in state:
+        spaces.append(dict(workspace_id='w2', label=state['label'], focused=False, active_tab_id='w2:t1', pane_count=len(state['panes']), tab_count=len(state['tabs'])))
+    reply(workspaces=spaces)
+elif command == ['workspace', 'create'] or command == ['tab', 'create']:
+    seed = command[0] == 'workspace'
+    pane, tab = ('w2:p0', 'w2:t0') if seed else ('w2:p1', 'w2:t1')
+    workspace = 'w2' if seed else option('--workspace')
+    if workspace == 'w1':
+        pane, tab = 'w1:p2', 'w1:t2'
+    if seed:
+        state['label'] = option('--label')
+    state['tabs'][tab] = dict(tab_id=tab, workspace_id=workspace, label='1' if seed else option('--label'), focused=False)
+    state['panes'][pane] = dict(pane_id=pane, tab_id=tab, workspace_id=workspace, terminal_id=pane, cwd=str(root/'project'))
+    reply(workspace=dict(workspace_id=workspace), tab=state['tabs'][tab], root_pane=state['panes'][pane])
+elif command == ['tab', 'list']:
+    tabs = [tab for tab in state['tabs'].values() if tab['workspace_id'] == option('--workspace')]
+    reply(tabs=([dict(tab_id='w1:t1', workspace_id='w1', focused=True)] if option('--workspace') == 'w1' else []) + tabs)
+elif command == ['pane', 'list']:
+    reply(panes=[dict(pane, foreground_cwd=str(root/('pool' if state['allocated'] else 'project'))) for pane in state['panes'].values()])
+elif command == ['pane', 'get']:
+    if args[2] not in state['panes']:
+        absent()
+    pane = dict(state['panes'][args[2]])
+    pane['foreground_cwd'] = str(root/('pool' if state['allocated'] else 'project'))
+    reply(pane=pane)
+elif command == ['pane', 'close']:
+    pane = state['panes'].pop(args[2], None)
+    if pane:
+        state['tabs'].pop(pane['tab_id'])
+    if args[2] == 'w2:p1':
+        os.kill(int(os.environ['FM_TEST_HERDR_PID']), signal.SIGTERM)
+    reply()
+elif command == ['pane', 'run']:
+    state['allocated'] = True
+    reply()
+elif command in [['pane', 'send-text'], ['pane', 'send-keys']]:
+    reply()
+elif command == ['agent', 'get']:
+    print(json.dumps(dict(error=dict(code='agent_not_found'))), file=sys.stderr)
+    sys.exit(1)
+elif args[:3] == ['terminal', 'title', 'clear']:
+    reply(reason='no_foreground_client')
+elif command == ['api', 'schema']:
+    if refusal == 'schema-error':
+        sys.exit(1)
+    if refusal == 'schema-malformed':
+        print('{')
+    else:
+        methods = [] if refusal in ('missing-capability', 'presentation-off') else [dict(properties=dict(method=dict(const='worktree.open')))]
+        print(json.dumps(dict(schemas=dict(request=dict(oneOf=methods)))))
+elif command == ['worktree', 'list']:
+    reply(worktrees=[dict(path=str(root/'pool'), is_linked_worktree=True, is_prunable=False, is_bare=False, open_workspace_id='w2')] if refusal == 'verified' else [])
+elif command == ['worktree', 'open']:
+    reply(already_open=True, workspace=dict(workspace_id='w2', worktree=dict(checkout_path=str(root/'pool'), repo_root=str(root/'project'), is_linked_worktree=True)), root_pane=dict(pane_id='w2:p1'), worktree=dict(path=str(root/'pool')))
+else:
+    sys.exit(1)
+path.write_text(json.dumps(state))
+PY
+  chmod +x "$FAKEBIN_DIR/herdr"
+  out=$(run_spawn "$id" --scout --backend herdr)
+  status=$?
+  if [ "$refusal" = verified ] || [ "$refusal" = presentation-off ]; then
+    expect_code 0 "$status" "$refusal launch failed: $out"
+    assert_contains "$out" "spawned $id" "$refusal launch did not finish"
+    assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/$id.meta" "$refusal lost its allocated checkout"
+    kill -0 "$pid" || fail "$refusal replaced the shell"
+    python3 - "$CASE_DIR" "$refusal" <<'PY' || fail "$refusal bypassed its allocation contract"
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+commands = [json.loads(line) for line in (root/'herdr.log').read_text().splitlines()]
+allocations = [c for c in commands if c[:2] == ['pane', 'run'] and not c[3].startswith('export ')]
+assert len(allocations) == 1, allocations
+native = [c for c in commands if c[:2] == ['worktree', 'open']]
+assert len(native) == (1 if sys.argv[2] == 'verified' else 0), native
+if sys.argv[2] == 'presentation-off':
+    assert not any(c[:2] in (['api', 'schema'], ['workspace', 'create']) for c in commands), commands
+PY
+    pass "$refusal launch preserves its single allocation and supported membership path"
+    return
+  fi
+  [ "$status" -ne 0 ] || fail "projected spawn accepted $refusal"
+  if [ "$refusal" = fetch ]; then
+    assert_contains "$out" 'could not fetch origin' 'projected spawn did not reach freshening'
+  else
+    assert_contains "$out" 'native Herdr worktree membership could not be verified' "projected spawn bypassed $refusal"
+  fi
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$INITIAL_SHA" ] || fail "$refusal changed the allocated checkout"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "$refusal published a completed task"
+  kill -0 "$pid" || fail "$refusal killed the allocated shell"
+  journal="$HOME_DIR/state/$id.herdr-presentation"
+  FM_HOME="$HOME_DIR" bash -c '. "$1/bin/backends/herdr.sh"; fm_backend_herdr_projection_journal_snapshot "$2" "$3"' \
+    fixture "$ROOT" "$journal" "$id" || fail "$refusal lost the reconciliation journal"
+  cp "$journal" "$CASE_DIR/journal-before"
+  cp "$CASE_DIR/endpoint.json" "$CASE_DIR/endpoint-before"
+  for preference in on off; do
+    printf '%s\n' "$preference" > "$HOME_DIR/config/herdr-presentation-spaces"
+    out=$(run_spawn "$id" --scout --backend herdr)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$refusal allowed a blind allocation retry with presentation $preference"
+    assert_contains "$out" 'no authoritative task record' "$refusal retry did not require authoritative reconciliation"
+    cmp "$journal" "$CASE_DIR/journal-before" || fail 'retry replaced the retained journal'
+    cmp "$CASE_DIR/endpoint.json" "$CASE_DIR/endpoint-before" || fail 'retry changed the retained endpoint'
+  done
+  python3 - "$CASE_DIR" "$refusal" <<'PY' || fail "$refusal retried allocation or removed its endpoint"
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+state = json.loads((root/'endpoint.json').read_text())
+assert state['allocated'] and list(state['panes']) == ['w2:p1'], state
+commands = [json.loads(line) for line in (root/'herdr.log').read_text().splitlines()]
+assert len([c for c in commands if c[:2] == ['pane', 'run']]) == 1, commands
+assert len([c for c in commands if c[:2] == ['workspace', 'create']]) == 1, commands
+assert len([c for c in commands if c[:2] == ['tab', 'create']]) == 1, commands
+assert not any(c[:3] == ['pane', 'close', 'w2:p1'] for c in commands), commands
+assert not any(c[:2] == ['worktree', 'open'] for c in commands), commands
+if sys.argv[2] != 'fetch':
+    assert any(c[:2] == ['api', 'schema'] for c in commands), commands
+if sys.argv[2] == 'missing-membership':
+    assert any(c[:2] == ['worktree', 'list'] for c in commands), commands
+PY
+  pass "projected $refusal refusal retains the allocation and journal without blind retries"
+)
+
 test_direct_pr_and_scout_refresh_before_launch() {
   local rec id out status contract current
   for contract in direct-pr scout; do
@@ -684,6 +852,9 @@ test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool
 test_unreachable_origin_refuses_stale_pool_base
+for refusal in fetch schema-error schema-malformed missing-capability missing-membership verified presentation-off; do
+  test_projected_allocation_contract "$refusal" || exit 1
+done
 test_originless_pool_launches_without_a_freshness_fetch
 test_originless_dirty_pool_refuses_without_discarding_work
 test_origin_config_without_url_refuses_pool

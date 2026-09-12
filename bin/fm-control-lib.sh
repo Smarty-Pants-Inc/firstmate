@@ -34,13 +34,9 @@
 #      stopped. A verb whose postcondition cannot be proven on the recorded
 #      backend is refused rather than performed blind.
 #
-# `resume` is deliberately NOT a verb. It is not deterministic across the
-# verified adapters: codex and grok resume only from a session id printed at
-# exit, opencode resumes the most recent session for the cwd with --continue,
-# and claude, pi, pi-signed, omp, and kimi have no verified pane-resume contract
-# at all. `relaunch` covers the same need deterministically for every adapter,
-# because the brief on disk - not a harness-private session - is the durable
-# instruction.
+# `resume` is deliberately NOT a verb: selecting an unrecorded conversation
+# cannot be deterministic across adapters. docs/agent-control.md owns managed
+# relaunch and points to the narrow retained Pi enrollment exception.
 
 # The complete control-plane verb allowlist, one per line.
 fm_control_verbs() {
@@ -48,12 +44,14 @@ fm_control_verbs() {
 interrupt
 exit
 relaunch
+move
+reconcile-move
 EOF
 }
 
 fm_control_verb_allowed() {  # <verb>
   case "${1-}" in
-    interrupt|exit|relaunch) return 0 ;;
+    interrupt|exit|relaunch|move|reconcile-move) return 0 ;;
   esac
   return 1
 }

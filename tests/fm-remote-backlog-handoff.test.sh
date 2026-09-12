@@ -93,10 +93,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 host=$1
-entry=$2
+# OpenSSH passes this quoted command word through the remote shell.
+entry=$(python3 -c 'import shlex, sys; entry, = shlex.split(sys.argv[1]); print(entry)' "$2") || exit 92
 shift 2
 [ "$host" = remote-mac ] || exit 91
-[ "$entry" = fm-remote-entrypoint.sh ] || exit 92
+[ "$entry" = "$FM_FAKE_REMOTE_ENTRYPOINT" ] || exit 92
 argv_b64=$4
 command_name=$(perl -MMIME::Base64=decode_base64 -e '$d=decode_base64($ARGV[0]); ($c)=split(/\0/, $d); print $c' "$argv_b64")
 case "${FM_FAKE_SSH_MODE:-normal}:$command_name" in
@@ -111,17 +112,17 @@ case "${FM_FAKE_SSH_MODE:-normal}:$command_name" in
       touch "$FM_FAKE_SERIALIZE_ENTERED"
       while [ ! -f "$FM_FAKE_SERIALIZE_RELEASE" ]; do sleep 0.02; done
     fi
-    exec "$FM_FAKE_REMOTE_ENTRYPOINT" "$@"
+    exec "$entry" "$@"
     ;;
   after-put:fm-remote-file.sh)
-    "$FM_FAKE_REMOTE_ENTRYPOINT" "$@"
+    "$entry" "$@"
     exit 255
     ;;
   after-receive:fm-backlog-receive.sh)
-    "$FM_FAKE_REMOTE_ENTRYPOINT" "$@"
+    "$entry" "$@"
     exit 255
     ;;
-  *) exec "$FM_FAKE_REMOTE_ENTRYPOINT" "$@" ;;
+  *) exec "$entry" "$@" ;;
 esac
 SH
 chmod +x "$FAKEBIN/fake-ssh"

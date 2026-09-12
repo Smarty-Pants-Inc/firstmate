@@ -33,6 +33,14 @@ lab_state=absent
 
 case "$1 ${2:-}" in
   "session list")
+    [ ! -f "$state/list-fails" ] || exit 94
+    if [ -f "$state/fleet-override.json" ]; then
+      jq --arg name "$session" --arg state "$lab_state" '
+        if $state == "absent" or $state == "deleted" then . else
+          .sessions += [{default:($state == "default"),name:$name,running:($state == "running"),socket_path:("/tmp/" + $name + ".sock")}]
+        end' "$state/fleet-override.json"
+      exit
+    fi
     if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
       jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
     else
@@ -58,11 +66,17 @@ case "$1 ${2:-}" in
   "session stop")
     [ "$3" = "$session" ] || exit 91
     printf '%s\n' stopped > "$state/$session"
+    if [ -f "$state/after-stop.json" ]; then
+      cp "$state/after-stop.json" "$state/fleet-override.json"
+    fi
     ;;
   "session delete")
     [ "$3" = "$session" ] || exit 92
     [ "${FM_FAKE_HERDR_DELETE_FAIL:-}" != 1 ] || exit 93
     printf '%s\n' deleted > "$state/$session"
+    if [ -f "$state/after-delete.json" ]; then
+      cp "$state/after-delete.json" "$state/fleet-override.json"
+    fi
     ;;
   *)
     printf '%s\n' '{"ok":true}'
@@ -109,6 +123,7 @@ test_provision_run_and_guarded_teardown() {
   assert_present "$TRIPWIRES/$name.fleet-state.json" "provision did not record the fleet-state tripwire"
 
   run_with_fake fm_herdr_lab_cli "$name" workspace list >/dev/null || fail "safe run command failed"
+  run_with_fake fm_herdr_lab_cli "$name" pane close w2:p1 >/dev/null || fail "guarded lab mutation failed"
   run_with_fake fm_herdr_lab_cli "$name" server >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "bare server start outside provision must be refused"
   status=0
@@ -165,20 +180,29 @@ test_missing_tripwire_blocks_destruction() {
   expect_code 1 "$status" "missing tripwire must refuse teardown"
   after=$(wc -l < "$FAKE_LOG")
   [ "$before" = "$after" ] || fail "missing tripwire reached Herdr instead of refusing before destructive calls"
+  status=0
+  run_with_fake fm_herdr_lab_cli "$name" pane close w2:p1 >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "missing tripwire must refuse lab run"
+  [ ! -s "$FAKE_LOG" ] || fail "missing tripwire reached lab run mutation"
   pass "fm-herdr-lab: missing tripwire refuses teardown before any Herdr call"
 }
 
-test_changed_default_trips_after_teardown() {
+test_changed_default_blocks_teardown() {
   local name="fm-lab-tripwire-change-$$" status=0
   : > "$FAKE_LOG"
   run_with_fake fm_herdr_lab_provision "$name" || fail "tripwire fixture provision failed"
   printf '%s\n' '/changed/default.sock' > "$FAKE_STATE/default-socket"
   run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "changed default fleet state must fail teardown"
+  status=0
+  run_with_fake fm_herdr_lab_cli "$name" pane close w2:p1 >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "changed default fleet state must fail lab run"
+  if grep -q '^pane close ' "$FAKE_LOG"; then fail "changed default allowed lab run mutation"; fi
+  [ "$(cat "$FAKE_STATE/$name")" = running ] || fail "changed default allowed a destructive call"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "failed tripwire should retain evidence"
   printf '%s\n' '/home/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
-  rm -f "$TRIPWIRES/$name.fleet-state.json"
-  pass "fm-herdr-lab: changed default fleet state is a hard failure"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "restored default did not allow guarded cleanup"
+  pass "fm-herdr-lab: changed default fleet state is a hard failure before destruction"
 }
 
 test_stopped_owned_lab_can_reprovision() {
@@ -234,10 +258,171 @@ SH
   pass "fm-herdr-lab: timed-out provisioning cancels the launch before teardown"
 }
 
+test_named_fleet_protection() {
+  local name="fm-lab-named-$$" status variant
+  export FM_HERDR_LAB_PROTECTED_SESSION=fm-remote
+  printf '%s\n' '{"sessions":[{"name":"fm-remote","default":false,"running":true,"socket_path":"/named/fleet.sock"}]}' > "$FAKE_STATE/fleet-override.json"
+  run_with_fake fm_herdr_lab_provision "$name" || fail "named fleet provision failed"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "named fleet teardown failed"
+  for variant in missing duplicate stopped wrong-default empty-socket; do
+    case "$variant" in
+      missing) printf '%s\n' '{"sessions":[]}' ;;
+      duplicate) printf '%s\n' '{"sessions":[{"name":"fm-remote","default":false,"running":true,"socket_path":"/x"},{"name":"fm-remote","default":false,"running":true,"socket_path":"/y"}]}' ;;
+      stopped) printf '%s\n' '{"sessions":[{"name":"fm-remote","default":false,"running":false,"socket_path":"/x"}]}' ;;
+      wrong-default) printf '%s\n' '{"sessions":[{"name":"fm-remote","default":true,"running":true,"socket_path":"/x"}]}' ;;
+      empty-socket) printf '%s\n' '{"sessions":[{"name":"fm-remote","default":false,"running":true,"socket_path":""}]}' ;;
+    esac > "$FAKE_STATE/fleet-override.json"
+    : > "$FAKE_LOG"
+    status=0
+    run_with_fake fm_herdr_lab_provision "$name-$variant" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "$variant named fleet must refuse provision"
+    if grep -q '^server ' "$FAKE_LOG"; then fail "$variant reached server launch"; fi
+  done
+  rm -f "$FAKE_STATE/fleet-override.json"
+  export FM_HERDR_LAB_PROTECTED_SESSION="$name"
+  for variant in prepare provision stop teardown; do
+    status=0
+    run_with_fake "fm_herdr_lab_$variant" "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "protected lab-shaped name must refuse $variant"
+  done
+  status=0
+  run_with_fake fm_herdr_lab_cli "$name" workspace list >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "protected lab-shaped name must refuse run"
+  status=0
+  run_with_fake fm_herdr_lab_provision default >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "explicit named fleet never permits default target"
+  unset FM_HERDR_LAB_PROTECTED_SESSION
+  pass "fm-herdr-lab: explicit named fleet is protected; missing, ambiguous and invalid identities refuse before launch"
+}
+
+test_named_fleet_drift_and_ambiguity() {
+  local name="fm-lab-named-drift-$$" variant operation status
+  local fleet='{"sessions":[{"name":"fm-remote","default":false,"running":true,"socket_path":"/named/fleet.sock"}]}'
+  export FM_HERDR_LAB_PROTECTED_SESSION=fm-remote
+  printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"
+  run_with_fake fm_herdr_lab_provision "$name" || fail "named drift fixture provision failed"
+  for variant in missing duplicate stopped socket default alias malformed multi-json list-fails; do
+    case "$variant" in
+      missing) printf '%s\n' '{"sessions":[]}' ;;
+      duplicate) printf '%s' "$fleet" | jq '.sessions += .sessions' ;;
+      stopped) printf '%s' "$fleet" | jq '.sessions[0].running = false' ;;
+      socket) printf '%s' "$fleet" | jq '.sessions[0].socket_path = "/changed/fleet.sock"' ;;
+      default) printf '%s' "$fleet" | jq '.sessions[0].default = true' ;;
+      alias) printf '%s' "$fleet" | jq '.sessions += [(.sessions[0] | .name = "other")]' ;;
+      malformed) printf '%s\n' '{broken' ;;
+      multi-json) printf '%s\n%s\n' "$fleet" "$fleet" ;;
+      list-fails) touch "$FAKE_STATE/list-fails"; printf '%s\n' "$fleet" ;;
+    esac > "$FAKE_STATE/fleet-override.json"
+    for operation in stop teardown provision; do
+      : > "$FAKE_LOG"
+      status=0
+      run_with_fake "fm_herdr_lab_$operation" "$name" >/dev/null 2>&1 || status=$?
+      expect_code 1 "$status" "$variant must refuse $operation"
+      if grep -Eq '^(server |session (stop|delete) )' "$FAKE_LOG"; then
+        fail "$variant reached lifecycle mutation during $operation"
+      fi
+      assert_present "$TRIPWIRES/$name.fleet-state.json" "$variant lost retained tripwire"
+    done
+    : > "$FAKE_LOG"
+    status=0
+    run_with_fake fm_herdr_lab_cli "$name" pane close w2:p1 >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "$variant must refuse lab run mutation"
+    if grep -q '^pane close ' "$FAKE_LOG"; then fail "$variant reached lab run mutation"; fi
+    rm -f "$FAKE_STATE/list-fails"
+  done
+  printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"
+  for variant in default duplicate socket; do
+    case "$variant" in
+      default) printf '%s\n' default > "$FAKE_STATE/$name"; printf '%s\n' "$fleet" ;;
+      duplicate) printf '%s' "$fleet" | jq --arg name "$name" '.sessions += [{name:$name,default:false,running:true,socket_path:"/lab.sock"}]' ;;
+      socket) printf '%s' "$fleet" | jq --arg name "$name" '.sessions[0].socket_path = ("/tmp/" + $name + ".sock")' ;;
+    esac > "$FAKE_STATE/fleet-override.json"
+    : > "$FAKE_LOG"
+    status=0
+    run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "ambiguous/default lab ($variant) must refuse teardown"
+    if grep -Eq '^session (stop|delete) ' "$FAKE_LOG"; then fail "ambiguous lab reached destruction"; fi
+    printf '%s\n' running > "$FAKE_STATE/$name"
+  done
+  printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"
+  run_with_fake fm_herdr_lab_stop "$name" >/dev/null || fail "owned lab stop failed"
+  printf '%s' "$fleet" | jq '.sessions[0].socket_path = "/changed.sock"' > "$FAKE_STATE/fleet-override.json"
+  : > "$FAKE_LOG"
+  status=0
+  run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "stopped owned lab must not restart after fleet change"
+  if grep -q '^server ' "$FAKE_LOG"; then fail "changed fleet allowed restart"; fi
+  printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"
+  printf '%s\n' absent > "$FAKE_STATE/$name"
+  : > "$FAKE_LOG"
+  status=0
+  run_with_fake fm_herdr_lab_stop "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "missing lab target must refuse stop even with a tripwire"
+  if grep -q '^session stop ' "$FAKE_LOG"; then fail "missing lab target reached stop"; fi
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "named drift fixture cleanup failed"
+  rm -f "$FAKE_STATE/fleet-override.json"
+  unset FM_HERDR_LAB_PROTECTED_SESSION
+  pass "fm-herdr-lab: fleet drift, failed reads and ambiguous lab identities block lifecycle mutations"
+}
+
+test_selection_and_destructive_rechecks() {
+  local name="fm-lab-rechecks-$$" selection operation status phase
+  local fleet='{"sessions":[{"name":"fm-remote","default":false,"running":true,"socket_path":"/named/fleet.sock"}]}'
+  printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"
+  # Ambient Herdr selection must not silently opt out of protecting default.
+  status=0
+  HERDR_SESSION=fm-remote run_with_fake fm_herdr_lab_prepare "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "ambient HERDR_SESSION must not select the protected fleet"
+  export FM_HERDR_LAB_PROTECTED_SESSION=fm-remote
+  run_with_fake fm_herdr_lab_provision "$name" || fail "selection fixture provision failed"
+  for selection in '' '../fm-remote' other default; do
+    for operation in stop teardown provision; do
+      : > "$FAKE_LOG"
+      status=0
+      FM_HERDR_LAB_PROTECTED_SESSION="$selection" run_with_fake "fm_herdr_lab_$operation" "$name" >/dev/null 2>&1 || status=$?
+      expect_code 1 "$status" "invalid/changed selection must refuse $operation"
+      if grep -Eq '^(server |session (stop|delete) )' "$FAKE_LOG"; then fail "changed selector reached mutation"; fi
+    done
+  done
+  # A different valid running selection is still not the originally recorded fleet.
+  printf '%s' "$fleet" | jq '.sessions += [{name:"other",default:false,running:true,socket_path:"/other.sock"}]' > "$FAKE_STATE/fleet-override.json"
+  status=0
+  FM_HERDR_LAB_PROTECTED_SESSION=other run_with_fake fm_herdr_lab_stop "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "valid changed selector must fail the recorded identity comparison"
+  printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "selection fixture cleanup failed"
+  for phase in stop delete; do
+    name="fm-lab-recheck-$phase-$$"
+    printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"
+    run_with_fake fm_herdr_lab_provision "$name" || fail "recheck fixture provision failed"
+    printf '%s' "$fleet" | jq '.sessions[0].socket_path = "/changed.sock"' > "$FAKE_STATE/after-$phase.json"
+    : > "$FAKE_LOG"
+    status=0
+    run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "fleet change after $phase must fail teardown"
+    assert_present "$TRIPWIRES/$name.fleet-state.json" "after-$phase drift lost evidence"
+    if [ "$phase" = stop ] && grep -q '^session delete ' "$FAKE_LOG"; then fail "delete did not recheck after stop"; fi
+    rm -f "$FAKE_STATE/after-$phase.json"
+    printf '%s\n' "$fleet" > "$FAKE_STATE/fleet-override.json"
+    run_with_fake fm_herdr_lab_teardown "$name" || fail "recheck fixture cleanup failed"
+  done
+  rm -f "$FAKE_STATE/fleet-override.json"
+  unset FM_HERDR_LAB_PROTECTED_SESSION
+  printf '%s\n' '{"sessions":[{"name":"default","default":true,"running":true,"socket_path":"/default.sock"},{"name":"impostor","default":true,"running":true,"socket_path":"/other.sock"}]}' > "$FAKE_STATE/fleet-override.json"
+  status=0
+  run_with_fake fm_herdr_lab_prepare "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "default compatibility must preserve the unique default-bit guard"
+  rm -f "$FAKE_STATE/fleet-override.json"
+  pass "fm-herdr-lab: explicit selection stays bound; stop/delete and final absence recheck the fleet"
+}
+
 test_refuses_unsafe_names
+test_named_fleet_protection
+test_named_fleet_drift_and_ambiguity
+test_selection_and_destructive_rechecks
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
-test_changed_default_trips_after_teardown
+test_changed_default_blocks_teardown
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
 test_timed_out_provision_cancels_late_launch

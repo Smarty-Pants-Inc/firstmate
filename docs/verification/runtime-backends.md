@@ -227,7 +227,7 @@ ok - fm-teardown: dedicated-socket invalid cleanup preserves target/control and 
 
 The dedicated tmux cell removed ambient tmux variables, required a socket-bound wrapper, kept one target and one independent control window, and proved the wrapper was not called for invalid metadata or a direct empty target.
 Valid cleanup removed only the exact task-bound target and left the control window live.
-The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
+These results cover the base metadata checks for tmux, Herdr, Zellij, Orca, and cmux before backend dispatch; the [shared validator](../../bin/fm-backend.sh) owns the additional live checks and cleanup retry requirements for retained Herdr identities.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, transcript bindings, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
 
 ## Claude workspace trust
@@ -572,7 +572,8 @@ No reasoning-effort axis was found; `gemini --help` on 0.58.0 exposes no effort,
 ## Herdr
 
 The compatibility floor is protocol 14.
-The whole real-Herdr lane's latest active verification uses both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
+Historical whole-lane verification used both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
+The current native membership guard narrows projected-launch acceptance as recorded under [Per-home and presentation topology](#per-home-and-presentation-topology); historical projection success is not current native adoption evidence.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 Default-on presentation projection has its own floor at Herdr 0.8.0, protocol 19, verified below.
 
@@ -747,7 +748,7 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
 ```
 
-Observed guarantees on 2026-07-30 against Herdr 0.7.5 protocol 17:
+Observed guarantees on 2026-07-30 against Herdr 0.7.5 protocol 17, before projected spawn required native membership:
 
 ```text
 ok - real herdr E2E: with one 'firstmate' workspace and no herdr parent, a crewmate still lands in this home's own workspace without stealing focus
@@ -777,7 +778,31 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantee: the primary and secondmate used distinct home workspaces, a child launched by the secondmate stayed in that secondmate workspace, list-live remained home-scoped, and exact cleanup did not affect sibling homes.
 
-The complete projection suite ran on 2026-07-21 against Herdr 0.7.4 protocol 16:
+The projection results below predate the [native membership guard](../herdr-backend.md#native-project-membership-and-moves) and do not qualify current native adoption or an installed artifact.
+On the exact CI pin, Herdr 0.7.4 protocol 16, the launcher and presentation suites now require safe refusal after linked allocation when native lookup cannot identify that existing workspace.
+They assert retained endpoint and journal identity, while the presentation suite also verifies that explicit `on` and retries with `on` or `off` cannot bypass membership safety.
+Flat placement, focus, lock contention, secondmate inheritance, and read-only token recovery remain executable on that pin; successful projected lifecycle cases remain required on other runtimes instead of treating an unknown failure as the 0.7.4 defect.
+`tests/fm-backend-herdr.test.sh` and `tests/fm-spawn-pool-base-freshen.test.sh` retain deterministic success coverage with verified native membership, which is separate from real-runtime success and exact-installed native-adoption acceptance.
+
+On 2026-09-12, the two real suites passed on Linux x86_64 with the official CI-pinned Herdr 0.7.4 protocol 16 and Treehouse 2.0.1, using an isolated test configuration and the guarded lab helper:
+
+```sh
+bin/fm-test-run.sh --jobs 1 --per-script-timeout-secs 480 \
+  --json .tools/ci-herdr/evidence/after.json \
+  tests/fm-backend-herdr-launcher-workspace-e2e.test.sh \
+  tests/fm-backend-herdr-presentation-e2e.test.sh
+```
+
+```text
+ok - real herdr E2E: Herdr 0.7.4 refuses presU with its linked checkout, endpoint, and journal preserved
+ok - real Herdr lab: Herdr 0.7.4 refuses explicit-on and preserves its endpoint and journal through on/off retries
+ok - real Herdr lab: concurrent post-allocation refusals retain exact endpoints and journals without focus drift
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=218089
+```
+
+Zero gate skips means both suites ran; the version-matched refusal cases replace successful projected lifecycle execution on 0.7.4, and no capable-runtime or installed acceptance is claimed by this run.
+
+The complete projection suite ran on 2026-07-21 against Herdr 0.7.4 protocol 16 before that guard:
 
 ```sh
 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
@@ -795,7 +820,8 @@ ok - real Herdr lab: multi-home exact-pane teardowns restore captain focus witho
 ok - real Herdr lab validation completed on Herdr 0.7.4 with the default-session tripwire intact
 ```
 
-The suite also covers lost or failed move responses, restart husks, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
+On a runtime that proves membership, the suite also covers lost or failed move responses, restart husks, manual renames, concurrent cleanup, and exact focus restoration.
+Missing and duplicate token diagnostics and retained post-allocation refusal run on the CI pin as well.
 
 The mandatory projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 16:
 
@@ -932,7 +958,7 @@ ok - real Herdr lab: a home that configured nothing is projected by default on h
 ok - real Herdr lab: a home that configured nothing falls back flat on below-floor herdr 0.7.4 with one naming warning
 ```
 
-Every other case in that suite uses an explicit opt-in or opt-out, so the floor leaves them unchanged on both releases.
+Every other case in that historical run used an explicit opt-in or opt-out; the floor alone did not change their presentation preference, which never overrides the current native membership requirement.
 
 Direct lab probes on 2026-07-28 established the removal rules the emptying-close plan relies on, each verified with `workspace list` focus reads around one mutation in a guarded `fm-lab-` session:
 

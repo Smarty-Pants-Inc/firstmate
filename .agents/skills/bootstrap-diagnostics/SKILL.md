@@ -52,7 +52,8 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `BACKLOG_RECONCILE: <id>: recorded backlog close could not be replayed: <reason>` - this session start found a pending-close record carrying a close or retention transition but could not land it.
   A valid teardown record proves the transition was authorized and recorded, but physical cleanup may be partial: verify process reaping, the local-copy return, and endpoint closure before assuming those resources are gone.
   A validation error means the record cannot be trusted, so do not assume cleanup completed or follow any path or argument stored in it.
-  Read the named reason, inspect the marker as inert data when validation failed, fix the record or backlog-file problem, and rerun session start so the valid recorded transition replays.
+  Read the named reason: incomplete retained Herdr cleanup follows the [shared close-replay contract](../../../bin/fm-backlog-transition-lib.sh) and must finish through teardown before startup can replay it.
+  For a record or backlog-file error, inspect the marker as inert data when validation failed, fix the named problem, and rerun session start so the valid recorded transition replays.
   Never delete `state/<id>.backlog-close` by hand - that can discard a completion link or captain-call retention the cleanup captured, and the surviving marker prevents the record sweep from starting the item meanwhile.
 - `BACKLOG_RECONCILE: <id>: worker record exists but its backlog item could not be read: <reason>` - this home could not determine whether the item matches its worker record.
   Resolve the named backlog read problem and rerun session start; never guess by starting or closing an unreadable item.

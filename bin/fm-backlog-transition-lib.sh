@@ -42,10 +42,20 @@
 # with it the completion links, so a process killed between the two halves would
 # leave nothing to reconstruct the close from. It writes
 # `state/<id>.backlog-close` first, and removes it once the close lands.
+# Teardown also stages this same record before closing a moved or enrolled Herdr
+# endpoint when backlog transitions are exempt, including persistent secondmates,
+# and during recursive descendant cleanup. Those paths remove it after physical
+# cleanup and metadata removal, without creating a backlog item for a secondmate.
+# bin/fm-backend.sh owns exact-generation, confirmed-absence retry admission.
 # The writer and replay share one complete-record validator, and teardown stages
 # that record before destructive cleanup, so it never publishes or acts on a close
 # replay would reject. The validator pins the data path to this home's configured
-# root before any recovery mutation, then re-runs exactly that close.
+# root before any recovery mutation. If matching-generation metadata still
+# carries a moved or enrolled Herdr identity, replay refuses without changing
+# the metadata, marker or backlog: teardown must finish physical cleanup with
+# that retained binding first. This includes descendant cleanup interrupted
+# before Treehouse return; tests/fm-teardown.test.sh covers owning-home restart.
+# Otherwise replay re-runs exactly that close.
 # `tasks-axi done` on an already-closed task backfills links
 # without moving the close date, so replay is idempotent. Spawn needs no marker:
 # it publishes the meta first, so a crash
@@ -1126,6 +1136,10 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       fm_backlog_close_marker_remove "$marker" "$state" || return 1
       FM_BACKLOG_CLOSE_REPLAY_RESULT=stale
       return 0
+    fi
+    if grep -Eq '^herdr_(enrollment|route)=' "$meta"; then
+      FM_BACKLOG_TRANSITION_ERROR="retained endpoint cleanup for $id is incomplete; finish teardown with its recorded identity before replaying the close"
+      return 1
     fi
     fm_backlog_close_marker_mark_cleanup_incomplete "$state" "$marker" "$id" "$data" \
       "$marker_spawn_gen" "${mode_flags[@]+"${mode_flags[@]}"}" "${args[@]+"${args[@]}"}" \

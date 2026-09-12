@@ -789,7 +789,10 @@ secondmate_liveness_one() {  # <meta> <id>
   fi
   backend=$(fm_backend_of_meta "$meta")
   target=$(fm_backend_target_of_meta "$meta")
-  [ -n "$target" ] || target="$window"
+  if [ -z "$target" ]; then
+    echo "SECONDMATE_LIVENESS: secondmate $id: skipped: endpoint validation failed; reconcile its retained record before recovery"
+    return 0
+  fi
   agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
   case "$harness" in
     claude|codex|opencode|pi|pi-signed|grok|kimi|omp) ;;
@@ -804,6 +807,15 @@ secondmate_liveness_one() {  # <meta> <id>
       fi
       ;;
     dead|missing)
+      if [ "$backend" = herdr ] && grep -q '^herdr_route=' "$meta"; then
+        if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-control.sh" "$id" relaunch 2>&1); then
+          secondmate_note_respawned "$id"
+          report_relaunch "$id" "confirmed agent absence on retained endpoint" "backend=$backend"
+        else
+          echo "SECONDMATE_LIVENESS: secondmate $id: retained-endpoint relaunch failed: $(first_line "$out")"
+        fi
+        return 0
+      fi
       if [ "$agent_state" = dead ]; then
         cause="confirmed agent absence on existing endpoint"
         fm_backend_kill "$backend" "$target" 2>/dev/null || true

@@ -879,6 +879,183 @@ test_fm_send_still_marks_the_same_secondmate_task() {
   pass "fm-control's arrival leaves fm-send's from-firstmate marking untouched"
 }
 
+test_herdr_move_and_reconcile() (
+  local dir="$TMP_ROOT/herdr-move" out rc
+  mkdir -p "$dir/bin" "$dir/home/state" "$dir/home/config"
+  export FM_MOVE_FIXTURE="$dir" FM_MOVE_PID=$$
+  export FM_MOVE_REAL_PS
+  FM_MOVE_REAL_PS=$(command -v ps)
+  printf '%s\n' before-wallclock-step > "$dir/ps-start"
+  cat > "$dir/bin/ps" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *' -o lstart= '*) cat "$FM_MOVE_FIXTURE/ps-start" ;;
+  *) exec "$FM_MOVE_REAL_PS" "$@" ;;
+esac
+SH
+  chmod +x "$dir/bin/ps"
+  cat > "$dir/bin/herdr" <<'PY'
+#!/usr/bin/env python3
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ['FM_MOVE_FIXTURE'])
+a = sys.argv[1:]
+assert a[-2:] == ['--session', 'lab']
+a = a[:-2]
+with (root/'calls').open('a') as f: f.write(json.dumps(a)+'\n')
+p = root/'endpoint.json'
+state = json.loads(p.read_text())
+def pane():
+    return dict(pane_id=state['pane'], tab_id=state['tab'], workspace_id=state['workspace'], terminal_id=state['terminal'], cwd=str(root))
+result = {}
+if a[:2] == ['session', 'list']:
+    print(json.dumps(dict(sessions=[dict(name='lab',running=True,socket_path=str(root/'lab.sock'))])))
+    sys.exit()
+if a[:2] == ['status', '--json']:
+    print(json.dumps(dict(server=dict(running=True))))
+    sys.exit()
+if a[:2] == ['pane', 'get']:
+    if a[2] != state['pane']:
+        if (root/'reuse-former').exists():
+            print(json.dumps(dict(result=dict(pane=dict(pane_id=a[2],terminal_id='foreign-terminal')))))
+        elif (root/'former-error').exists():
+            print((root/'former-error').read_text(), file=sys.stderr)
+        else:
+            print(json.dumps(dict(error=dict(code='pane_not_found'))), file=sys.stderr)
+        sys.exit(1)
+    result = dict(pane=pane())
+elif a[:2] == ['pane', 'process-info']:
+    result = dict(process_info=dict(shell_pid=int(os.environ['FM_MOVE_PID'])))
+elif a[:2] == ['pane', 'list']:
+    ws = a[a.index('--workspace')+1]
+    result = dict(panes=([pane()] if state['workspace']==ws else []) + [dict(pane_id=ws+':p99',terminal_id='anchor')])
+elif a[:2] == ['workspace', 'list']:
+    result = dict(workspaces=[dict(workspace_id=x) for x in ['w1','w2']])
+elif a[:2] == ['tab', 'get']:
+    result = dict(tab=dict(tab_id=state['tab'],workspace_id=('w99' if (root/'bad-tab').exists() else state['workspace']),label='fm-work',pane_count=1))
+elif a[:2] == ['pane', 'move']:
+    old = state['pane']
+    assert a[2] == old
+    state.update(workspace=a[a.index('--workspace')+1])
+    state['sequence'] += 1
+    state.update(pane=state['workspace']+':p'+str(state['sequence']),tab=state['workspace']+':t'+str(state['sequence']))
+    p.write_text(json.dumps(state))
+    if (root/'lose-response').exists(): sys.exit(1)
+    result = dict(move_result=dict(previous_pane_id=old,pane=pane()))
+elif a[:2] == ['pane', 'send-keys']:
+    assert a[2] == state['pane'], 'input reached an obsolete endpoint'
+    with (root/'input').open('a') as f: f.write(a[2]+'\n')
+else:
+    raise SystemExit('unexpected fixture call: '+repr(a))
+print(json.dumps(dict(result=result)))
+PY
+  chmod +x "$dir/bin/herdr"
+  printf '%s\n' '{"pane":"w1:p1","tab":"w1:t1","workspace":"w1","terminal":"same-terminal","sequence":1}' > "$dir/endpoint.json"
+  printf '%s\n' 'backend=herdr' 'endpoint_task_id=work' 'window=lab:w1:p1' \
+    "worktree=$dir" "project=$dir" 'harness=pi' 'kind=ship' 'herdr_session=lab' \
+    'herdr_workspace_id=w1' 'herdr_tab_id=w1:t1' 'herdr_pane_id=w1:p1' 'pr=preserve-this' > "$dir/home/state/work.meta"
+  export PATH="$dir/bin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state"
+  unset FM_ROOT_OVERRIDE FM_CONFIG_OVERRIDE FM_PI_GATE_SESSION NO_MISTAKES_RUN_ID
+  rc=0
+  out=$("$CONTROL" work move --workspace w2 --expected-window lab:w1:p999 2>&1) || rc=$?
+  expect_code 1 "$rc" "move must refuse changed expected endpoint: $out"
+  if grep -q '"pane", "move"' "$dir/calls"; then fail 'changed endpoint reached native move'; fi
+  : > "$dir/bad-tab"
+  rc=0
+  out=$("$CONTROL" work move --workspace w2 --expected-window lab:w1:p1 2>&1) || rc=$?
+  expect_code 1 "$rc" "contradictory source tab must refuse before moving: $out"
+  if grep -q '"pane", "move"' "$dir/calls"; then fail 'contradictory source tab reached native move'; fi
+  rm "$dir/bad-tab"
+  out=$("$CONTROL" work move --workspace w2 --expected-window lab:w1:p1 2>&1) || fail "move failed: $out"
+  grep -qx 'window=lab:w2:p2' "$dir/home/state/work.meta" || fail 'returned move endpoint was not recorded'
+  grep -qx 'pr=preserve-this' "$dir/home/state/work.meta" || fail 'move lost unrelated metadata'
+  assert_move_route() {
+    local selector=$1 expected=$2 resolved
+    resolved=$(bash -c '. "$1/bin/fm-backend.sh"; fm_backend_resolve_selector "$2" "$FM_HOME/state"' \
+      route "$ROOT" "$selector") || fail "shared routing refused $selector"
+    [ "$resolved" = "$expected" ] || fail "wrong shared route: $resolved"
+    : > "$dir/input"
+    "$SEND" "$selector" --key Enter >/dev/null 2>&1 || fail "fm-send refused $selector"
+    [ "$(cat "$dir/input")" = "${expected#*:}" ] || fail 'delivery did not reach the current pane'
+  }
+  assert_move_route lab:w1:p1 lab:w2:p2
+  if [ "$(uname -s)" = Linux ]; then
+    [ "$(ps -p "$FM_MOVE_PID" -o lstart=)" = before-wallclock-step ] || fail 'initial ps clock fixture missing'
+    printf '%s\n' after-wallclock-step > "$dir/ps-start"
+    [ "$(ps -p "$FM_MOVE_PID" -o lstart=)" = after-wallclock-step ] || fail 'ps clock fixture did not drift'
+    assert_move_route work lab:w2:p2
+  fi
+  cp "$dir/home/state/work.meta" "$dir/home/state/conflict.meta"
+  rc=0
+  out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?
+  expect_code 1 "$rc" "duplicate former-selector claims must refuse: $out"
+  rm "$dir/home/state/conflict.meta"
+  touch "$dir/reuse-former"
+  : > "$dir/input"
+  rc=0
+  out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?
+  expect_code 1 "$rc" "reused former selector must refuse: $out"
+  [ ! -s "$dir/input" ] || fail 'reused former selector received input'
+  rm "$dir/reuse-former"
+  for error in 'not-json' '{"error":{"code":"session_unavailable"}}'; do
+    printf '%s\n' "$error" > "$dir/former-error"
+    : > "$dir/input"
+    rc=0
+    out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?
+    expect_code 1 "$rc" "unverified former selector must refuse: $out"
+    [ ! -s "$dir/input" ] || fail 'unverified former selector received input'
+  done
+  rm "$dir/former-error"
+  : > "$dir/lose-response"
+  rc=0
+  out=$("$CONTROL" work move --workspace w1 --expected-window lab:w2:p2 2>&1) || rc=$?
+  expect_code 1 "$rc" "lost response must not claim success: $out"
+  grep -q '^herdr_move=' "$dir/home/state/work.meta" || fail 'unknown outcome lost pending barrier'
+  rc=0
+  out=$("$SEND" lab:w1:p1 --key Enter 2>&1) || rc=$?
+  expect_code 1 "$rc" "former selector must refuse while move is pending: $out"
+  rc=0
+  out=$("$CONTROL" work exit 2>&1) || rc=$?
+  expect_code 1 "$rc" "pending move must refuse ordinary control: $out"
+  rc=0
+  out=$("$CONTROL" work move --workspace w1 --expected-window lab:w2:p2 2>&1) || rc=$?
+  expect_code 1 "$rc" "pending move must refuse replay: $out"
+  # Wrong terminal with the same public ID cannot settle the pending move.
+  python3 - "$dir/endpoint.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['terminal']='replacement'; open(p,'w').write(json.dumps(d))
+PY
+  rc=0
+  out=$("$CONTROL" work reconcile-move 2>&1) || rc=$?
+  expect_code 1 "$rc" "replacement terminal must not reconcile: $out"
+  python3 - "$dir/endpoint.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['terminal']='same-terminal'; open(p,'w').write(json.dumps(d))
+PY
+  : > "$dir/bad-tab"
+  rc=0
+  out=$("$CONTROL" work reconcile-move 2>&1) || rc=$?
+  expect_code 1 "$rc" "contradictory destination tab must retain the pending move: $out"
+  grep -q '^herdr_move=' "$dir/home/state/work.meta" || fail 'contradictory destination lost pending barrier'
+  rm "$dir/bad-tab"
+  out=$("$CONTROL" work reconcile-move 2>&1) || fail "reconcile failed: $out"
+  grep -qx 'window=lab:w1:p3' "$dir/home/state/work.meta" || fail 'reconcile did not consume new returned identity'
+  if grep -q '^herdr_move=' "$dir/home/state/work.meta"; then fail 'verified reconciliation left barrier'; fi
+  [ "$(grep -c '"pane", "move"' "$dir/calls")" = 2 ] || fail 'reconciliation replayed a native move'
+  assert_move_route lab:w1:p1 lab:w1:p3
+  assert_move_route lab:w2:p2 lab:w1:p3
+  assert_move_route work lab:w1:p3
+  cp "$dir/endpoint.json" "$dir/saved-endpoint.json"
+  jq '.terminal = "replacement"' "$dir/saved-endpoint.json" > "$dir/endpoint.json"
+  : > "$dir/input"
+  rc=0
+  out=$("$SEND" work --key Enter 2>&1) || rc=$?
+  expect_code 1 "$rc" "moved task must refuse a replacement terminal: $out"
+  [ ! -s "$dir/input" ] || fail 'replacement terminal received input'
+  mv "$dir/saved-endpoint.json" "$dir/endpoint.json"
+  pass 'fm-control Herdr move: returned IDs, persistent unknown-outcome barrier, same-terminal reconciliation and no replay'
+)
+
+test_herdr_move_and_reconcile
 test_exit_types_each_harness_verified_command
 test_interrupt_sends_each_harness_verified_key
 test_opencode_interrupts_twice_and_others_once

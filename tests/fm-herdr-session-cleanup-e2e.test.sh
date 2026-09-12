@@ -82,7 +82,9 @@ ANCHOR_TAB=$(printf '%s' "$ANCHOR" | jq -r '.result.tab.tab_id')
 TOKEN=AbCdEfGhIjKlMnOpQrStUv
 ID=restored-idle-shell
 TITLE="└ $ID · p:$TOKEN"
-CANDIDATE=$(lab workspace create --cwd "$ROOT" --label "$TITLE" --no-focus) || fail 'could not create projected child fixture'
+PROJECT="$TMP_ROOT/project"
+git init -q "$PROJECT" || fail 'could not create primary project fixture'
+CANDIDATE=$(lab workspace create --cwd "$PROJECT" --label "$TITLE" --no-focus) || fail 'could not create projected child fixture'
 WS=$(printf '%s' "$CANDIDATE" | jq -r '.result.workspace.workspace_id')
 PANE=$(printf '%s' "$CANDIDATE" | jq -r '.result.root_pane.pane_id')
 {

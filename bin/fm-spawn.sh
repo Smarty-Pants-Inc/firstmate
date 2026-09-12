@@ -43,6 +43,9 @@
 #   the new incarnation. The replacement still never starts outside the copy
 #   holding the work: a Herdr shell that has drifted out of the recorded
 #   worktree is told once to return, and only a shell that will not go refuses.
+#   A Herdr replacement receives command-local HERDR_PANE_ID, HERDR_TAB_ID,
+#   HERDR_WORKSPACE_ID and HERDR_SESSION from that live-checked record, not
+#   the persistent shell's old selectors; its startup children inherit them.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max|ultra> are concrete profile
@@ -62,8 +65,12 @@
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
 #   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
-#   auto-detected herdr or cmux spawn prints a loud stderr notice;
+#   session provider only, exactly like herdr/zellij, so it does. Treehouse-backed
+#   fresh spawns resolve the allocator executable from the spawning process's
+#   PATH before endpoint creation and pass a nonempty TREEHOUSE_ROOT as --root.
+#   The new terminal cannot silently substitute its own executable or root;
+#   absent TREEHOUSE_ROOT, the resolved allocator retains its configured default.
+#   An auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
 #   blocked backend contract. Default tmux spawns do not write backend= to meta;
@@ -91,9 +98,8 @@
 #   parent, and label bindings. On a same-identity restart, that complete binding
 #   plus authoritative metadata may replace one exact agent-free husk in place.
 #   The journal, visible token, and labels alone are never endpoint or ownership
-#   authority, and every ambiguous recovery stays on the flat fallback after
-#   duplicate-agent risk is independently absent. Treehouse allocation and task
-#   metadata are unchanged.
+#   authority; docs/herdr-backend.md (Presentation spaces) owns recovery
+#   eligibility, including refusal of unresolved partial allocations.
 #   A clean projected create or exact resume makes one bounded attempt to hold
 #   the one session-scoped presentation-order lock (keyed by named session plus
 #   canonical socket, outside any home's state/) through launch handoff. Lock
@@ -1249,6 +1255,8 @@ RAW_LAUNCH=0
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
+RETAINED_PI_SESSION=
+RETAINED_PI_SESSION_ID=
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
     echo "error: --relaunch takes the task id only; its project or home comes from the task's own record" >&2
@@ -1312,6 +1320,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
     HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
+    fm_backend_herdr_relaunch_identity "$RELAUNCH_META" || exit 1
   fi
   # With no explicit harness, a relaunch reuses the harness already recorded
   # for this task. It must NOT fall through to the fresh-spawn config
@@ -1320,6 +1329,15 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # the caller's explicit decision, made with --harness (bin/fm-control.sh
   # resolves that decision, including a secondmate's durable pin).
   ARG3=${HARNESS_ARG:-$RELAUNCH_PRIOR_HARNESS}
+  if [ -n "$(fm_meta_get "$RELAUNCH_META" herdr_enrollment)" ]; then
+    [ "$ARG3" = pi ] && [ "$RAW_LAUNCH" -eq 0 ] || {
+      echo 'error: retained enrollment requires its exact native Pi history, not a replacement runtime or raw command' >&2
+      exit 1
+    }
+    RETAINED_PI_SESSION=$(fm_backend_meta_exact_value "$RELAUNCH_META" pi_session_file) || exit 1
+    RETAINED_PI_SESSION_ID=$(fm_backend_meta_exact_value "$RELAUNCH_META" pi_session_id) || exit 1
+    "$SCRIPT_DIR/fm-pi-session-check.sh" "$RETAINED_PI_SESSION" "$RELAUNCH_WT" "$RETAINED_PI_SESSION_ID" >/dev/null || exit 1
+  fi
   [ -n "$ARG3" ] || {
     echo "error: task $ID has no recorded harness; pass --harness to relaunch it" >&2
     exit 1
@@ -1447,7 +1465,7 @@ launch_template() {
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi|pi-signed)
-      printf '%s' '__PIBIN____PITUIMODE__'
+      printf '%s' '__PIBIN____PITUIMODE____PISESSION__'
       if [ "$kind" = secondmate ]; then
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
@@ -2182,6 +2200,14 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  TREEHOUSE_BIN=$(resolve_pi_executable treehouse) || {
+    echo "error: treehouse executable is unavailable in the spawning process PATH; refusing allocation" >&2
+    exit 1
+  }
+  TREEHOUSE_GET="$(shell_quote "$TREEHOUSE_BIN") get"
+  if [ -n "${TREEHOUSE_ROOT:-}" ]; then
+    TREEHOUSE_GET="$TREEHOUSE_GET --root $(shell_quote "$TREEHOUSE_ROOT")"
+  fi
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
     exit 1
@@ -2596,6 +2622,22 @@ if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
 fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$BACKEND" = herdr ]; then
+  HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
+  if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
+    fm_backlog_record_present "$STATE/$ID.meta" "task record" "$STATE" || {
+      echo "error: retained herdr presentation for $ID has no authoritative task record; reconcile the partial allocation before retrying" >&2
+      exit 1
+    }
+  fi
+fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$(fm_backend_of_meta "$STATE/$ID.meta")" = herdr ]; then
+  fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" || exit 1
+  if grep -Eq '^herdr_(enrollment|route)=' "$STATE/$ID.meta"; then
+    echo "error: task $ID retains an existing Herdr identity; use fm-control $ID relaunch to preserve its endpoint and history" >&2
+    exit 1
+  fi
+fi
 if [ -e "$STATE/$ID.backlog-close" ] || [ -L "$STATE/$ID.backlog-close" ]; then
   echo "error: task $ID has a pending authoritative backlog close at $STATE/$ID.backlog-close; finish or repair that close before dispatching a new worker" >&2
   exit 1
@@ -2652,7 +2694,6 @@ case "$BACKEND" in
       HERDR_LABEL_HOME=$PROJ_ABS
       HERDR_LAUNCHER_RELATIONSHIP=other-home
     fi
-    HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
     if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
       HERDR_SES=$(fm_backend_herdr_session)
@@ -2666,9 +2707,7 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }
-        if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
-          herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
-        fi
+        herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
         fm_backend_herdr_projection_recovery_allows_flat \
           "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" || exit 1
         if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ]; then
@@ -3066,7 +3105,11 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  [ "${HERDR_PROJECTED:-0}" != 1 ] || HERDR_PROJECTION_ABORT_CLEANUP=0
+  spawn_send_text_line "$WT_TARGET" "$TREEHOUSE_GET" || {
+    echo "error: could not submit the resolved Treehouse allocation command; inspect window $T" >&2
+    exit 1
+  }
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -3129,6 +3172,18 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
+fi
+
+# Adopt only this exact, already allocated single-task projection. Herdr owns
+# membership; Treehouse and the isolation check above continue to own Git.
+# Flat/secondmate layouts and non-Herdr backends retain their existing path.
+if [ "${HERDR_PROJECTED:-0}" = 1 ] && [ "$KIND" != secondmate ]; then
+  # shellcheck source=bin/backends/herdr-project.sh
+  . "$FM_ROOT/bin/backends/herdr-project.sh"
+  if ! fm_backend_herdr_project_adopt "$HERDR_SES" "$WT" "$HERDR_WORKSPACE_ID" "$HERDR_PANE_ID"; then
+    echo "error: native Herdr worktree membership could not be verified for $T; preserving the endpoint and any partial membership; do not repeat or remove the worktree" >&2
+    exit 1
+  fi
 fi
 
 # Pre-register Claude's workspace trust for the worktree, at the first point the
@@ -3776,6 +3831,11 @@ MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT" "$MODEL") || exit 1
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
+PISESSIONFLAG=
+if [ -n "$RETAINED_PI_SESSION" ]; then
+  PISESSIONFLAG=" --session $(shell_quote "$RETAINED_PI_SESSION")"
+fi
+LAUNCH=${LAUNCH//__PISESSION__/$PISESSIONFLAG}
 if [ "$HARNESS" = rovo ]; then
   ROVOCONFIGOVERRIDE=$(rovo_config_override_flag "$EFFORT" "$DATA" "$STATE" "$ID") || {
     echo "error: could not resolve this task's home paths for rovo's allowedExternalPaths grant" >&2
@@ -3803,6 +3863,11 @@ case "$HARNESS" in
     LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
     ;;
 esac
+if [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = herdr ]; then
+  # Command-local identity reaches startup children without changing the shell.
+  # Compose before history/trace guards and the optional clean-env wrapper.
+  LAUNCH="HERDR_ENV=1 HERDR_SESSION=$(shell_quote "$HERDR_SES") HERDR_PANE_ID=$(shell_quote "$HERDR_PANE_ID") HERDR_TAB_ID=$(shell_quote "$HERDR_TAB_ID") HERDR_WORKSPACE_ID=$(shell_quote "$HERDR_WORKSPACE_ID") $LAUNCH"
+fi
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
 # back to the default ~/.claude store even when firstmate itself runs under a
@@ -3835,6 +3900,12 @@ if [ "$KIND" = secondmate ]; then
   # Reuse the single frozen decision from the carrier resolution above so the
   # injected carrier and this on/off snapshot are guaranteed to agree.
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
+fi
+if [ -n "$RETAINED_PI_SESSION" ]; then
+  # Recheck on the retained terminal immediately before Pi opens the file.
+  # Never --continue, a picker, --session-id, or a fresh-history fallback.
+  retained_check="$(shell_quote "$SCRIPT_DIR/fm-pi-session-check.sh") $(shell_quote "$RETAINED_PI_SESSION") $(shell_quote "$WT") $(shell_quote "$RETAINED_PI_SESSION_ID")"
+  LAUNCH="$retained_check >/dev/null && env -u PI_SESSION_ID -u PI_SESSION_FILE FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$(shell_quote "$FM_HOME") $LAUNCH"
 fi
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"

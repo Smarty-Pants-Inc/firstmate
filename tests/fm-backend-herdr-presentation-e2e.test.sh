@@ -4,6 +4,8 @@
 # owning-parent ordering across primary and secondmate homes.
 # The test drives the real spawn and teardown scripts, a real Treehouse pool,
 # and the guarded named-session lab helper.
+# Herdr 0.7.4 must retain and refuse unverified projected allocations; other
+# releases must satisfy the successful native-membership lifecycle assertions.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,7 +26,6 @@ TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-presentation.XX
 FAKEBIN="$TMP_ROOT/fakebin"
 HERDR_CALL_LOG="$TMP_ROOT/herdr-calls.log"
 TREEHOUSE_CALL_LOG="$TMP_ROOT/treehouse-calls.log"
-TREEHOUSE_LOCK_DIR="$TMP_ROOT/treehouse-call.lock"
 MOVE_CALL_LOG="$TMP_ROOT/workspace-move-calls.log"
 FOCUS_AUDIT_LOG="$TMP_ROOT/focus-audit.log"
 ACTIVE_SEEDED_CONTROL="$TMP_ROOT/active-seeded-control"
@@ -35,7 +36,7 @@ mkdir -p "$FAKEBIN"
 : > "$MOVE_CALL_LOG"
 : > "$FOCUS_AUDIT_LOG"
 REAL_MOVER="$ROOT/bin/backends/herdr-workspace-move.py"
-export REAL_HERDR REAL_TREEHOUSE REAL_MOVER HERDR_CALL_LOG TREEHOUSE_CALL_LOG TREEHOUSE_LOCK_DIR MOVE_CALL_LOG FOCUS_AUDIT_LOG HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
+export REAL_HERDR REAL_TREEHOUSE REAL_MOVER HERDR_CALL_LOG TREEHOUSE_CALL_LOG MOVE_CALL_LOG FOCUS_AUDIT_LOG HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
 export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL TMP_ROOT
 
 # Log every production-adapter call, remove its already-validated trailing
@@ -211,17 +212,9 @@ set -u
 if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
   exit 0
 fi
-# Treehouse's pool allocator is outside the Herdr concurrency contract under
-# test. Serialize its calls so simultaneous recovery spawns cannot race for
-# one pool slot before reaching the Herdr session lock exercised below.
-while ! mkdir "$TREEHOUSE_LOCK_DIR" 2>/dev/null; do
-  sleep 0.01
-done
-release_treehouse_lock() { rmdir "$TREEHOUSE_LOCK_DIR" 2>/dev/null || true; }
-trap release_treehouse_lock EXIT
-trap 'exit 1' HUP INT TERM
-"$REAL_TREEHOUSE" "$@"
-exit $?
+# Spawn owns allocation serialization. A wrapper lock would remain held for
+# Treehouse's entire interactive shell and block the next task's allocation.
+exec "$REAL_TREEHOUSE" "$@"
 SH
 
 cat > "$FAKEBIN/herdr-workspace-mover" <<'SH'
@@ -410,6 +403,62 @@ spawn_task() {  # <id> <home> <project>
   local id=$1 home=$2 project=$3
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'while :; do sleep 60; done'" --mode no-mistakes --yolo off --backend herdr
+}
+
+assert_native_membership_refusal() {  # <id>
+  local id=$1 journal pane workspace info wt before after preference start shell_pid
+  start=$(log_line_count)
+  if spawn_task "$id" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/$id-refused.out" 2> "$TMP_ROOT/$id-refused.err"; then
+    fail "Herdr 0.7.4 projected $id without verified native membership"
+  fi
+  grep -F 'native Herdr worktree membership could not be verified' "$TMP_ROOT/$id-refused.err" >/dev/null \
+    || fail "$id did not reach membership verification: $(cat "$TMP_ROOT/$id-refused.err")"
+  journal="$HOME_DIR/state/$id.herdr-presentation"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "$id published an unverified task"
+  [ "$(grep '^version=' "$journal")" = version=2 ] || fail "$id lost its exact allocation journal"
+  pane=$(grep '^pane_id=' "$journal" | cut -d= -f2-)
+  workspace=$(grep '^workspace_id=' "$journal" | cut -d= -f2-)
+  info=$(lab pane get "$pane") || fail "$id lost its retained endpoint"
+  wt=$(printf '%s' "$info" | jq -er '.result.pane.foreground_cwd') || fail "$id lost its foreground cwd"
+  [ "$(git -C "$wt" rev-parse --show-toplevel)" = "$wt" ] && [ "$wt" != "$PROJECT_DIR" ] \
+    || fail "$id did not retain an isolated checkout"
+  RECORDED_WORKTREES="${RECORDED_WORKTREES}${wt}"$'\n'
+  printf '%s' "$info" | jq -e --arg project "$PROJECT_DIR" --arg workspace "$workspace" \
+    '.result.pane | .cwd == $project and .foreground_cwd != .cwd and .workspace_id == $workspace' >/dev/null \
+    || fail "$id did not reproduce root-shell versus foreground cwd divergence"
+  lab worktree list --cwd "$PROJECT_DIR" | jq -e --arg wt "$wt" --arg workspace "$workspace" '
+    [.result.worktrees[] | select(.path == $wt and .is_linked_worktree == true)]
+    | length == 1 and (.[0].open_workspace_id != $workspace)' >/dev/null \
+    || fail "$id did not reproduce the native lookup mismatch"
+  # These are emitted native identity and command-log contracts, not source.
+  before=$(printf '%s' "$info" | jq -c '.result.pane | {pane_id,tab_id,workspace_id,terminal_id,cwd,foreground_cwd}')
+  shell_pid=$(lab pane process-info --pane "$pane" | jq -er '.result.process_info.shell_pid | select(. > 1)') \
+    || fail "$id has no retained shell process"
+  cp "$journal" "$TMP_ROOT/$id-retained-journal"
+  cp "$TREEHOUSE_CALL_LOG" "$TMP_ROOT/$id-retained-allocator-log"
+  for preference in on off; do
+    printf '%s\n' "$preference" > "$HOME_DIR/config/herdr-presentation-spaces"
+    if spawn_task "$id" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/$id-retry.out" 2> "$TMP_ROOT/$id-retry.err"; then
+      fail "$id allocated again with presentation=$preference"
+    fi
+    grep -F 'no authoritative task record' "$TMP_ROOT/$id-retry.err" >/dev/null \
+      || fail "$id retry did not require reconciliation"
+    cmp -s "$journal" "$TMP_ROOT/$id-retained-journal" || fail "$id retry changed its journal"
+    cmp -s "$TREEHOUSE_CALL_LOG" "$TMP_ROOT/$id-retained-allocator-log" || fail "$id retry invoked the allocator"
+    after=$(lab pane get "$pane" | jq -c '.result.pane | {pane_id,tab_id,workspace_id,terminal_id,cwd,foreground_cwd}')
+    [ "$before" = "$after" ] || fail "$id retry changed the retained endpoint"
+    [ "$(lab pane process-info --pane "$pane" | jq -r '.result.process_info.shell_pid')" = "$shell_pid" ] \
+      || fail "$id retry replaced its original shell"
+    [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "$id retry published an unverified task"
+  done
+  sed -n "$((start + 1)),\$p" "$HERDR_CALL_LOG" | awk -F '\t' -v pane="$pane" '
+    $1 == "pane" && $2 == "run" && $3 == pane { allocations++ }
+    $1 == "pane" && ($2 == "close" || $2 == "send-text" || $2 == "send-keys") && $3 == pane { bad=1 }
+    $1 == "worktree" && $2 == "open" { bad=1 }
+    END { exit(bad || allocations != 1) }
+  ' || fail "$id replayed allocation, launched an agent, closed its endpoint, or guessed native membership"
+  assert_focus_is "$CAPTAIN_FOCUS" "$id safe refusal and retries"
+  pass "real Herdr lab: Herdr 0.7.4 refuses $id and preserves its endpoint and journal through on/off retries"
 }
 
 finish_concurrent_spawn() {  # <id> <status> <stdout> <stderr>
@@ -631,9 +680,19 @@ CAPTAIN_FOCUS="$SECOND_TWO_WSID/$SECOND_TWO_TAB"
 assert_focus_is "$CAPTAIN_FOCUS" "focused secondmate fixture"
 
 : > "$TREEHOUSE_CALL_LOG"
-# The historical presence-based opt-in was an empty file; it must still project,
-# so no home that had already enabled the projection is turned off by the default.
+# The historical empty opt-in and explicit on both request projection, but
+# neither grants an exception to native membership verification on 0.7.4.
 : > "$HOME_DIR/config/herdr-presentation-spaces"
+if [ "$FLOOR_VERSION" = 0.7.4 ]; then
+  assert_native_membership_refusal shape
+  write_ship_brief "$HOME_DIR" explicit-on 'Explicit presentation opt-in cannot override native membership safety.'
+  printf 'on\n' > "$HOME_DIR/config/herdr-presentation-spaces"
+  assert_native_membership_refusal explicit-on
+  printf 'on\n' > "$HOME_DIR/config/herdr-presentation-spaces"
+  printf 'note: Herdr 0.7.4 exercises native membership refusal; projected success lifecycle cases require a capable runtime\n'
+else
+# Successful projection lifecycle assertions remain required on other releases;
+# a failure on an unknown runtime is never reclassified as the pinned defect.
 SHAPE_FOCUS_AUDIT_START=$(focus_audit_line_count)
 spawn_task shape "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/on.out" 2> "$TMP_ROOT/on.err" \
   || fail "projected spawn failed: $(cat "$TMP_ROOT/on.err")"
@@ -700,6 +759,7 @@ teardown_task active-seeded "$HOME_DIR" > "$TMP_ROOT/active-seeded-teardown.out"
 cp "$TMP_ROOT/move-log-before-active-seeded" "$MOVE_CALL_LOG"
 assert_focus_is "$CAPTAIN_FOCUS" "active seeded-tab fixture cleanup"
 pass "real Herdr lab: persisted-focused seeded prune proceeds when no live client is attached"
+fi
 
 LOCK_CONTENTION_READY="$TMP_ROOT/lock-contention-ready"
 LOCK_CONTENTION_RELEASE="$TMP_ROOT/lock-contention-release"
@@ -752,6 +812,7 @@ teardown_task lock-contended "$HOME_DIR" > "$TMP_ROOT/lock-contended-teardown.ou
   || fail "flat lock-contention fixture teardown failed: $(cat "$TMP_ROOT/lock-contended-teardown.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "bounded presentation lock flat fallback teardown"
 pass "real Herdr lab: bounded lock contention warns and falls back flat without projection or focus drift"
+if [ "$FLOOR_VERSION" != 0.7.4 ]; then
 PROJECTION_ORDER_START=$(log_line_count)
 
 [ "$OFF_WT" = "$ON_WT" ] || fail "Treehouse did not reuse the same fixture worktree, so byte comparison is inconclusive"
@@ -840,56 +901,6 @@ FAIL_CLOSED_PANES=$(sed -n "$((FAIL_START + 1)),\$p" "$HERDR_CALL_LOG" | awk -F 
 assert_no_ordering_lifecycle_calls_since "$FAIL_START" "failed presentation ordering"
 pass "real Herdr lab: forced workspace.move failure leaves a successful worker in default order with a warning and no cleanup"
 
-mkdir -p "$POST_CREATE_ABORT_CONTROL"
-ABORT_START=$(log_line_count)
-ABORT_FOCUS_START=$(focus_audit_line_count)
-spawn_task abort-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-a.out" 2> "$TMP_ROOT/abort-a.err" &
-ABORT_A_PID=$!
-spawn_task abort-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-b.out" 2> "$TMP_ROOT/abort-b.err" &
-ABORT_B_PID=$!
-if wait "$ABORT_A_PID"; then ABORT_A_STATUS=0; else ABORT_A_STATUS=$?; fi
-if wait "$ABORT_B_PID"; then ABORT_B_STATUS=0; else ABORT_B_STATUS=$?; fi
-finish_concurrent_expected_abort abort-a "$ABORT_A_STATUS" "$TMP_ROOT/abort-a.out" "$TMP_ROOT/abort-a.err"
-finish_concurrent_expected_abort abort-b "$ABORT_B_STATUS" "$TMP_ROOT/abort-b.out" "$TMP_ROOT/abort-b.err"
-# The forced foreground_cwd is a plain non-git directory, which the discovery
-# poll now screens out on every read rather than adopting, so the armed failure
-# arrives as the poll's own deadline refusal naming that path.
-grep -F "did not enter an isolated worktree" "$TMP_ROOT/abort-a.err" >/dev/null 2>&1 \
-  || fail "post-create abort fixture A did not reach the armed validation failure"
-grep -F "did not enter an isolated worktree" "$TMP_ROOT/abort-b.err" >/dev/null 2>&1 \
-  || fail "post-create abort fixture B did not reach the armed validation failure"
-ABORT_A_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-a/task-pane")
-ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
-ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
-  $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { print "create-a" }
-  $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { print "create-b" }
-  $1 == "pane-close" && $4 == a { print "close-a" }
-  $1 == "pane-close" && $4 == b { print "close-b" }
-')
-case "$ABORT_SEQUENCE" in
-  $'create-a\nclose-a\ncreate-b\nclose-b'|$'create-b\nclose-b\ncreate-a\nclose-a') ;;
-  *) fail "concurrent post-create abort cleanup interleaved outside the presentation lock: $ABORT_SEQUENCE" ;;
-esac
-ABORT_UNRESTORED=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
-  ($1 == "workspace-create" || $1 == "tab-create" || $1 == "workspace-move" || ($1 == "pane-close" && $4 != a && $4 != b)) && $2 != $3 { print }
-')
-[ -z "$ABORT_UNRESTORED" ] \
-  || fail "post-create abort create, prune, or move changed exact focus: $ABORT_UNRESTORED"
-assert_focus_is "$CAPTAIN_FOCUS" "concurrent post-create abort cleanup"
-assert_cleanup_focus_preserved "$ABORT_FOCUS_START" "$ABORT_A_PANE" "$CAPTAIN_FOCUS"
-assert_cleanup_focus_preserved "$ABORT_FOCUS_START" "$ABORT_B_PANE" "$CAPTAIN_FOCUS"
-assert_no_ordering_lifecycle_calls_since "$ABORT_START" "concurrent post-create abort cleanup"
-for ABORT_PANE in "$ABORT_A_PANE" "$ABORT_B_PANE"; do
-  if lab pane get "$ABORT_PANE" >/dev/null 2>&1; then
-    fail "serialized post-create abort cleanup left exact task pane $ABORT_PANE alive"
-  fi
-done
-[ ! -e "$HOME_DIR/state/abort-a.meta" ] && [ ! -e "$HOME_DIR/state/abort-b.meta" ] \
-  || fail "post-create abort fixtures published task metadata before launch"
-rm -rf "$POST_CREATE_ABORT_CONTROL"
-rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herdr-presentation"
-pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
-
 SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" \
   || fail "projected teardown failed: $(cat "$TMP_ROOT/on-teardown.err")"
@@ -962,6 +973,7 @@ for ROUND in 1 2 3; do
     || fail "focus wave $ROUND cleanup left a projected workspace behind: $WAVE_REMAINING"
 done
 pass "real Herdr lab: three repeated concurrent create/order/cleanup waves have zero active workspace or tab drift"
+fi
 
 # ------------------------------------------------------------------
 # Multi-home topology: real secondmate FM_HOME spawn paths, inheritance,
@@ -1031,6 +1043,7 @@ pass "real Herdr lab: the primary presentation setting inherits into real second
 # Keep the pre-existing 2ndmate-alpha/bravo workspaces as owning parents and captain focus.
 assert_focus_is "$CAPTAIN_FOCUS" "multi-home captain focus"
 
+if [ "$FLOOR_VERSION" != 0.7.4 ]; then
 mkdir -p "$SECOND_HOME_A/data/a1" "$SECOND_HOME_A/data/a2" \
   "$SECOND_HOME_B/data/b1" "$SECOND_HOME_B/data/b2" \
   "$HOME_DIR/data/p1" "$HOME_DIR/data/p2"
@@ -1372,7 +1385,6 @@ pass "real Herdr lab: legacy projection labels and flat secondmate tabs are left
 for META_HOME_PAIR in \
   "p1:$HOME_DIR" "p2:$HOME_DIR" "pcw:$HOME_DIR" "post-legacy:$HOME_DIR" \
   "a1:$SECOND_HOME_A" "a2:$SECOND_HOME_A" "acw:$SECOND_HOME_A" \
-  "alpha:$HOME_DIR" \
   "b1:$SECOND_HOME_B" "b2:$SECOND_HOME_B" "bcw:$SECOND_HOME_B"
 do
   TASK_ID=${META_HOME_PAIR%%:*}
@@ -1382,6 +1394,59 @@ do
 done
 assert_focus_is "$CAPTAIN_FOCUS" "multi-home teardown"
 pass "real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority"
+fi
+teardown_task alpha "$HOME_DIR" > "$TMP_ROOT/td-alpha.out" 2> "$TMP_ROOT/td-alpha.err" \
+  || fail "secondmate alpha teardown failed: $(cat "$TMP_ROOT/td-alpha.err")"
+
+# Retained failed allocations run after success waves so they cannot become
+# fixtures for later work or change those waves' expected workspace ordering.
+mkdir -p "$POST_CREATE_ABORT_CONTROL"
+ABORT_START=$(log_line_count)
+ABORT_FOCUS_START=$(focus_audit_line_count)
+spawn_task abort-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-a.out" 2> "$TMP_ROOT/abort-a.err" &
+ABORT_A_PID=$!
+spawn_task abort-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-b.out" 2> "$TMP_ROOT/abort-b.err" &
+ABORT_B_PID=$!
+if wait "$ABORT_A_PID"; then ABORT_A_STATUS=0; else ABORT_A_STATUS=$?; fi
+if wait "$ABORT_B_PID"; then ABORT_B_STATUS=0; else ABORT_B_STATUS=$?; fi
+finish_concurrent_expected_abort abort-a "$ABORT_A_STATUS" "$TMP_ROOT/abort-a.out" "$TMP_ROOT/abort-a.err"
+finish_concurrent_expected_abort abort-b "$ABORT_B_STATUS" "$TMP_ROOT/abort-b.out" "$TMP_ROOT/abort-b.err"
+# The forced foreground_cwd is a plain non-git directory, which the discovery
+# poll now screens out on every read rather than adopting, so the armed failure
+# arrives as the poll's own deadline refusal naming that path.
+grep -F "did not enter an isolated worktree" "$TMP_ROOT/abort-a.err" >/dev/null 2>&1 \
+  || fail "post-create abort fixture A did not reach the armed validation failure"
+grep -F "did not enter an isolated worktree" "$TMP_ROOT/abort-b.err" >/dev/null 2>&1 \
+  || fail "post-create abort fixture B did not reach the armed validation failure"
+ABORT_A_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-a/task-pane")
+ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
+ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
+  $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { print "create-a" }
+  $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { print "create-b" }
+  $1 == "pane-close" && $4 == a { print "close-a" }
+  $1 == "pane-close" && $4 == b { print "close-b" }
+')
+case "$ABORT_SEQUENCE" in
+  $'create-a\ncreate-b'|$'create-b\ncreate-a') ;;
+  *) fail "concurrent post-allocation refusal closed a retained endpoint: $ABORT_SEQUENCE" ;;
+esac
+ABORT_UNRESTORED=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
+  ($1 == "workspace-create" || $1 == "tab-create" || $1 == "workspace-move" || ($1 == "pane-close" && $4 != a && $4 != b)) && $2 != $3 { print }
+')
+[ -z "$ABORT_UNRESTORED" ] \
+  || fail "post-create abort create, prune, or move changed exact focus: $ABORT_UNRESTORED"
+assert_focus_is "$CAPTAIN_FOCUS" "concurrent post-allocation refusal"
+assert_no_ordering_lifecycle_calls_since "$ABORT_START" "concurrent post-allocation refusal"
+for ABORT_ID in abort-a abort-b; do
+  ABORT_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/$ABORT_ID/task-pane")
+  lab pane get "$ABORT_PANE" >/dev/null || fail "$ABORT_ID lost its retained task pane"
+  [ "$(grep '^pane_id=' "$HOME_DIR/state/$ABORT_ID.herdr-presentation" | cut -d= -f2-)" = "$ABORT_PANE" ] \
+    || fail "$ABORT_ID lost its retained allocation journal"
+done
+[ ! -e "$HOME_DIR/state/abort-a.meta" ] && [ ! -e "$HOME_DIR/state/abort-b.meta" ] \
+  || fail "post-create abort fixtures published task metadata before launch"
+rm -rf "$POST_CREATE_ABORT_CONTROL"
+pass "real Herdr lab: concurrent post-allocation refusals retain exact endpoints and journals without focus drift"
 
 # Missing, renamed, and duplicate tokens are read-only recovery diagnostics.
 # The duplicate case allows flat fallback only when every matching pane is
