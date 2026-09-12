@@ -96,6 +96,25 @@ Current mixed-tab layouts use the [control plane's endpoint move](agent-control.
 Moving a Lead preserves its actual home and process; it does not turn that home into product Git metadata.
 Native project membership and display labels never replace the owning home's task endpoint record.
 
+### Retained endpoint enrollment
+
+`bin/fm-enroll-herdr.sh` enrolls an existing agent-free, single-pane native worktree workspace into an explicit owning home without allocating, typing, moving, renaming, or changing its source.
+Its header owns the private expected-identity receipt, supported scope, locks, publication, and recovery commands.
+The task must already be an eligible native ship task with complete instructions.
+The receiving owner supplies the complete same-host claim-home scope; the command locks and checks those actual records rather than guessing ownership from labels or scanning unrelated directories.
+External UI operations must remain serialized by that owner, as with native adoption above.
+
+Enrollment requires exact workspace/tab/pane/terminal and kernel process identity, both reported cwd values and physical cwd, clean source and canonical common Git, a unique native parent and child membership, and one exact stopped Pi history.
+The current retained-history check supports Linux only and refuses another Pi or JavaScript runtime at the same cwd, including a process whose selected history is not exposed in its command line.
+Missing, conflicting, unreadable, or ambiguous evidence stops admission without changing the endpoint.
+Metadata and the inbox are published through the existing backlog transition contract; an unreadable dispatch outcome preserves the record for reconciliation and never reports success.
+
+After receiving that record, use the normal `fm-control.sh <task> relaunch --note <instructions>` path.
+For an enrolled task this opens the recorded existing Pi session file with the recorded UUID, model, effort, and owning home; it never selects a recent session, starts replacement history, or switches runtimes.
+The receiving owner must verify native history/model/effort and the full task read, durable instruction acknowledgement, and result before authorizing source edits.
+Later control and delivery operations recheck the retained endpoint binding; movement requires separate custody reconciliation.
+Enrollment does not repair missing native membership, recover other partial launches, change installed code, or replace review and delivery gates.
+
 ## Presentation spaces
 
 Each new crewmate or scout is placed in a disposable one-task workspace by default, on Herdr 0.8.0 and newer.

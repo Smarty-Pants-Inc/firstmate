@@ -48,7 +48,9 @@ The clear is refused before anything is sent when the recorded backend cannot de
 Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm-teardown.sh`](../bin/fm-teardown.sh), which owns the landed-work test.
 
 **`resume` is not a verb.**
-It is not deterministic across the verified adapters: codex, grok, and gemini resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, omp, and kimi have no verified pane-resume contract.
+It is not deterministic across the verified adapters: some require an explicit session id, others select recent cwd history, and the control plane must not infer a conversation.
+[Retained Pi enrollment](herdr-backend.md#retained-endpoint-enrollment) is the narrow exception: `relaunch` reopens its verified, recorded existing session file and UUID rather than starting fresh.
+This does not add a picker, recent-session fallback, or a general `resume` verb.
 `relaunch` covers the same need on every adapter, because the brief on disk - not a harness-private session - is the durable instruction.
 
 ## Herdr endpoint moves
@@ -84,7 +86,8 @@ Non-Herdr move requests are refused; existing interrupt, exit, and relaunch beha
    For a `kind=secondmate` task, the home's identity marker must match and its child records must be readable, so a relaunch can never strand child work behind an unreadable home.
    A secondmate's own crewmates run in their own endpoints and outlive its relaunch; the relaunched secondmate reconciles them from its home's durable records at startup.
 3. **Record the note.**
-   A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
+   A ship or scout relaunch requires `--note`; ordinary replacements inherit the local copy but not the conversation.
+   Enrolled Pi tasks retain their exact history, but still need the receiving note to reconcile current instructions.
    A secondmate relaunch does not require one and never rewrites its standing charter.
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
 5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.

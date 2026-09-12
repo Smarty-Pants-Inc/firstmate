@@ -1253,6 +1253,8 @@ RAW_LAUNCH=0
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
+RETAINED_PI_SESSION=
+RETAINED_PI_SESSION_ID=
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
     echo "error: --relaunch takes the task id only; its project or home comes from the task's own record" >&2
@@ -1324,6 +1326,15 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # the caller's explicit decision, made with --harness (bin/fm-control.sh
   # resolves that decision, including a secondmate's durable pin).
   ARG3=${HARNESS_ARG:-$RELAUNCH_PRIOR_HARNESS}
+  if [ -n "$(fm_meta_get "$RELAUNCH_META" herdr_enrollment)" ]; then
+    [ "$ARG3" = pi ] && [ "$RAW_LAUNCH" -eq 0 ] || {
+      echo 'error: retained enrollment requires its exact native Pi history, not a replacement runtime or raw command' >&2
+      exit 1
+    }
+    RETAINED_PI_SESSION=$(fm_backend_meta_exact_value "$RELAUNCH_META" pi_session_file) || exit 1
+    RETAINED_PI_SESSION_ID=$(fm_backend_meta_exact_value "$RELAUNCH_META" pi_session_id) || exit 1
+    "$SCRIPT_DIR/fm-pi-session-check.sh" "$RETAINED_PI_SESSION" "$RELAUNCH_WT" "$RETAINED_PI_SESSION_ID" >/dev/null || exit 1
+  fi
   [ -n "$ARG3" ] || {
     echo "error: task $ID has no recorded harness; pass --harness to relaunch it" >&2
     exit 1
@@ -1451,7 +1462,7 @@ launch_template() {
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi|pi-signed)
-      printf '%s' '__PIBIN____PITUIMODE__'
+      printf '%s' '__PIBIN____PITUIMODE____PISESSION__'
       if [ "$kind" = secondmate ]; then
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
@@ -3811,6 +3822,11 @@ MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT" "$MODEL") || exit 1
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
+PISESSIONFLAG=
+if [ -n "$RETAINED_PI_SESSION" ]; then
+  PISESSIONFLAG=" --session $(shell_quote "$RETAINED_PI_SESSION")"
+fi
+LAUNCH=${LAUNCH//__PISESSION__/$PISESSIONFLAG}
 if [ "$HARNESS" = rovo ]; then
   ROVOCONFIGOVERRIDE=$(rovo_config_override_flag "$EFFORT" "$DATA" "$STATE" "$ID") || {
     echo "error: could not resolve this task's home paths for rovo's allowedExternalPaths grant" >&2
@@ -3870,6 +3886,12 @@ if [ "$KIND" = secondmate ]; then
   # Reuse the single frozen decision from the carrier resolution above so the
   # injected carrier and this on/off snapshot are guaranteed to agree.
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
+fi
+if [ -n "$RETAINED_PI_SESSION" ]; then
+  # Recheck on the retained terminal immediately before Pi opens the file.
+  # Never --continue, a picker, --session-id, or a fresh-history fallback.
+  retained_check="$(shell_quote "$SCRIPT_DIR/fm-pi-session-check.sh") $(shell_quote "$RETAINED_PI_SESSION") $(shell_quote "$WT") $(shell_quote "$RETAINED_PI_SESSION_ID")"
+  LAUNCH="$retained_check >/dev/null && env -u PI_SESSION_ID -u PI_SESSION_FILE FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$(shell_quote "$FM_HOME") $LAUNCH"
 fi
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"

@@ -481,6 +481,33 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         echo "REFUSED: Herdr endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
         return 1
       fi
+      if grep -q '^herdr_enrollment=' "$meta"; then
+        local enrollment history history_id parent_workspace
+        enrollment=$(fm_backend_meta_exact_value "$meta" herdr_enrollment) || return 1
+        history=$(fm_backend_meta_exact_value "$meta" pi_session_file) || return 1
+        history_id=$(fm_backend_meta_exact_value "$meta" pi_session_id) || return 1
+        parent_workspace=$(fm_backend_meta_exact_value "$meta" herdr_parent_workspace_id) || return 1
+        jq -en --argjson e "$enrollment" --arg home "$FM_HOME" --arg id "$id" \
+          --arg project "$project" --arg worktree "$worktree" --arg session "$recorded_session" \
+          --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" \
+          --arg history "$history" --arg history_id "$history_id" --arg parent "$parent_workspace" '
+          $e.schema == "fm-herdr-enrollment.v1" and $e.home == $home and $e.task == $id
+          and $e.project == $project and $e.worktree == $worktree and $e.session == $session
+          and $e.workspace == $workspace and $e.tab == $tab and $e.pane == $pane
+          and $e.pi_session_file == $history and $e.pi_session_id == $history_id
+          and $e.parent_workspace == $parent' >/dev/null || {
+          echo "REFUSED: task $id has a conflicting retained enrollment binding." >&2
+          return 1
+        }
+        fm_backend_source herdr || return 1
+        # shellcheck source=bin/backends/herdr-enroll.sh
+        . "$FM_BACKEND_LIB_DIR/backends/herdr-enroll.sh"
+        if ! fm_backend_herdr_enrollment_source "$enrollment" allow-dirty \
+          || ! fm_backend_herdr_enrollment_identity "$enrollment"; then
+          echo "REFUSED: retained task $id no longer has its exact enrolled native identity." >&2
+          return 1
+        fi
+      fi
       ;;
     zellij)
       [ "$binding" = "$id" ] || {

@@ -58,6 +58,9 @@
 # endpoint, or discarding work stays with bin/fm-teardown.sh, which owns the
 # landed-work test.
 #
+# Retained Pi enrollment is the narrow history-preserving exception to ordinary
+# relaunch: fm-enroll-herdr records an exact existing file/UUID, and fm-spawn
+# verifies and reopens it. The receiving note remains required.
 # `resume` is not a verb: it is not deterministic across the verified adapters
 # (bin/fm-control-lib.sh's header owns that reasoning). `relaunch` covers the
 # same need for every adapter because the brief on disk, not a harness-private
@@ -191,7 +194,7 @@ shift 2
 if ! fm_control_verb_allowed "$VERB"; then
   {
     if [ "$VERB" = resume ]; then
-      echo "error: 'resume' is not a control verb: resuming an exited agent is not deterministic across the verified adapters (codex and grok need a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, and kimi have no verified pane-resume contract). Use 'relaunch', which carries the brief plus a progress note into a fresh agent on any adapter."
+      echo "error: 'resume' is not a control verb: resuming an exited agent is not deterministic across the verified adapters (codex and grok need a session id printed at exit, opencode continues the most recent session for the cwd, and no adapter may infer an unrecorded history). Use 'relaunch', which carries the brief plus a progress note into an agent. For retained Pi enrollment, relaunch reopens the recorded exact history; ordinary tasks start fresh."
     else
       echo "error: '$VERB' is not a control verb"
     fi
@@ -326,6 +329,9 @@ fi
 
 case "$VERB" in
   move|reconcile-move)
+    if grep -q '^herdr_enrollment=' "$META"; then
+      die "retained enrollment binds the original endpoint; moving it requires separately authorized custody reconciliation"
+    fi
     [ "$(fm_backend_meta_exact_value "$META" backend)" = herdr ] || die "move is supported only for recorded Herdr endpoints"
     MOVE_LOCK_PATH=$(fm_meta_lock_path "$META") || exit 1
     fm_lock_try_acquire "$MOVE_LOCK_PATH" || die "task endpoint metadata is busy"
@@ -702,6 +708,9 @@ resolve_relaunch_profile() {
   # transaction, where nothing has changed yet.
   fm_control_harness_supports_kind "$TARGET_HARNESS" "$KIND" \
     || die "'$TARGET_HARNESS' is not verified to run a $KIND task, so relaunching $ID onto it would stop the running agent for a launch that must be refused; choose an adapter verified for this kind"
+  if grep -q '^herdr_enrollment=' "$META" && [ "$TARGET_HARNESS" != pi ]; then
+    die "retained enrollment requires its exact Pi history; refusing a replacement runtime before stopping anything"
+  fi
   # A model or effort chosen for the previous harness does not transfer to a
   # different one, so an explicit harness change resets both axes unless the
   # caller names them too.
