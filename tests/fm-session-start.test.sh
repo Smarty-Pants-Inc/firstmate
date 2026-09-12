@@ -604,6 +604,8 @@ EOF
   touch "$home/state/.last-watcher-beat"
   {
     printf 'window=default:p-old\n'
+    printf 'endpoint_task_id=%s\n' "$id"
+    printf 'project=%s\nworktree=%s\n' "$mate" "$mate"
     printf 'kind=secondmate\n'
     printf 'harness=pi\n'
     printf 'home=%s\n' "$mate"
@@ -1354,10 +1356,13 @@ EOF
 
   printf 'window=sess:p-live\nkind=ship\nbackend=herdr\n' > "$home/state/task-live.meta"
   printf 'window=sess:p-dead\nkind=ship\nbackend=herdr\n' > "$home/state/task-dead.meta"
+  printf 'window=sess:p-old\nkind=ship\nbackend=herdr\nherdr_move={}\n' > "$home/state/task-pending.meta"
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "endpoint: alive (backend=herdr window=sess:p-live)" "live herdr endpoint not reported alive"
   assert_contains "$out" "endpoint: dead (backend=herdr window=sess:p-dead)" "dead herdr endpoint not reported dead"
+  assert_contains "$out" 'endpoint: unknown (recorded endpoint could not be validated)' 'pending move was not reported as unverified'
+  assert_not_contains "$out" 'endpoint: dead (backend=herdr window=sess:p-old)' 'pending move was reported dead using its obsolete selector'
 
   pass "herdr endpoint liveness is reported per task: alive for a live pane, dead for a gone one"
 }

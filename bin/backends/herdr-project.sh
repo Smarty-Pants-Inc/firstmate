@@ -2,9 +2,6 @@
 # Native worktree membership for a validated, single-pane projected Work.
 # Called by fm-spawn only after Treehouse and Git isolation validation, while
 # holding the existing presentation session lock. No worktree allocator here.
-# Return 2 when the native capability is absent; other failures stop the spawn
-# without cleaning an ambiguous native membership result. There is no safe
-# membership-only detach API, and worktree.remove is NEVER a rollback.
 
 fm_backend_herdr_project_paths() { # <linked-worktree>
   python3 - "$1" <<'PY'
@@ -34,9 +31,9 @@ PY
 
 fm_backend_herdr_project_adopt() { # <session> <worktree> <workspace> <pane>
   local session=$1 wt=$2 workspace=$3 pane=$4 paths parent list panes native before after out schema
-  schema=$(fm_backend_herdr_cli "$session" api schema --json 2>/dev/null) || return 2
+  schema=$(fm_backend_herdr_cli "$session" api schema --json 2>/dev/null) || return 1
   printf '%s' "$schema" | jq -e '
-    any(.schemas.request.oneOf[]?; .properties.method.const == "worktree.open")' >/dev/null || return 2
+    any(.schemas.request.oneOf[]?; .properties.method.const == "worktree.open")' >/dev/null || return 1
   paths=$(fm_backend_herdr_project_paths "$wt") || return 1
   parent=$(printf '%s' "$paths" | jq -er .parent) || return 1
   wt=$(printf '%s' "$paths" | jq -er .worktree) || return 1

@@ -2688,6 +2688,10 @@ case "$BACKEND" in
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
+        fm_backlog_record_present "$STATE/$ID.meta" "task record" "$STATE" || {
+          echo "error: retained herdr presentation for $ID has no authoritative task record; reconcile the partial allocation before retrying" >&2
+          exit 1
+        }
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
           exit 1
@@ -2696,9 +2700,7 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }
-        if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
-          herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
-        fi
+        herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
         fm_backend_herdr_projection_recovery_allows_flat \
           "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" || exit 1
         if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ]; then
@@ -3171,16 +3173,10 @@ fi
 if [ "${HERDR_PROJECTED:-0}" = 1 ] && [ "$KIND" != secondmate ]; then
   # shellcheck source=bin/backends/herdr-project.sh
   . "$FM_ROOT/bin/backends/herdr-project.sh"
-  HERDR_ADOPT_STATUS=0
-  fm_backend_herdr_project_adopt "$HERDR_SES" "$WT" "$HERDR_WORKSPACE_ID" "$HERDR_PANE_ID" \
-    || HERDR_ADOPT_STATUS=$?
-  case "$HERDR_ADOPT_STATUS" in
-    0|2) : ;;
-    *)
-      echo "error: native Herdr worktree membership could not be verified for $T; preserving the endpoint and any partial membership; do not repeat or remove the worktree" >&2
-      exit 1
-      ;;
-  esac
+  if ! fm_backend_herdr_project_adopt "$HERDR_SES" "$WT" "$HERDR_WORKSPACE_ID" "$HERDR_PANE_ID"; then
+    echo "error: native Herdr worktree membership could not be verified for $T; preserving the endpoint and any partial membership; do not repeat or remove the worktree" >&2
+    exit 1
+  fi
 fi
 
 # Pre-register Claude's workspace trust for the worktree, at the first point the

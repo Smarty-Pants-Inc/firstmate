@@ -65,6 +65,11 @@ FIXTURE_DIR="$TMP_ROOT/fixture"
 LOCK_LOG="$TMP_ROOT/locks.log"
 CLOSE_LOG="$TMP_ROOT/closes.log"
 mkdir -p "$FIXTURE_DIR"
+PROJECT="$TMP_ROOT/project"
+LINKED="$TMP_ROOT/linked"
+git init -q "$PROJECT" || fail 'could not create cleanup project'
+git -C "$PROJECT" -c user.name=Test -c user.email=test@example.invalid commit -q --allow-empty -m init || fail 'could not commit cleanup project'
+git -C "$PROJECT" worktree add -q --detach "$LINKED" || fail 'could not create linked cleanup fixture'
 
 fm_backend_name() { printf herdr; }
 fm_backend_herdr_session() { printf test; }
@@ -159,7 +164,9 @@ fm_backend_herdr_cli() {
       printf '{"result":{"panes":'; fixture_panes; printf '}}\n'
       ;;
     "pane get")
-      printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' "$PANE" "$TAB" "$WS"
+      jq -nc --arg pane "$PANE" --arg tab "$TAB" --arg workspace "$WS" \
+        --arg cwd "$(cat "$FIXTURE_DIR/cwd")" --arg foreground "$(cat "$FIXTURE_DIR/foreground-cwd")" \
+        '{result:{pane:{pane_id:$pane,tab_id:$tab,workspace_id:$workspace,cwd:$cwd,foreground_cwd:$foreground}}}'
       ;;
     "agent get")
       case "$(cat "$FIXTURE_DIR/agent")" in
@@ -228,6 +235,8 @@ reset_fixture() {
   printf '1\n' > "$FIXTURE_DIR/panes"
   printf 'w1:t1\n' > "$FIXTURE_DIR/active-tab"
   printf 'absent\n' > "$FIXTURE_DIR/agent"
+  printf '%s\n' "$PROJECT" > "$FIXTURE_DIR/cwd"
+  printf '%s\n' "$PROJECT" > "$FIXTURE_DIR/foreground-cwd"
   write_v1 "$ID"
 }
 
@@ -281,6 +290,10 @@ reset_fixture; : > "$FIXTURE_DIR/error-workspace-get"; assert_preserved "unreada
 reset_fixture; : > "$FIXTURE_DIR/race"; assert_preserved "revalidation race"
 reset_fixture; printf '%s\n' "$TAB" > "$FIXTURE_DIR/active-tab"; assert_preserved "active target"
 reset_fixture; : > "$FIXTURE_DIR/focus-refuse"; assert_preserved "focus refusal"
+reset_fixture; printf '%s\n' "$LINKED" > "$FIXTURE_DIR/foreground-cwd"; assert_preserved "allocated foreground directory"
+reset_fixture; printf '%s\n' "$LINKED" > "$FIXTURE_DIR/cwd"; printf '%s\n' "$LINKED" > "$FIXTURE_DIR/foreground-cwd"; assert_preserved "restored linked allocation"
+reset_fixture; : > "$FIXTURE_DIR/foreground-cwd"; assert_preserved "unverified foreground directory"
+reset_fixture; printf '%s\n' "$TMP_ROOT" > "$FIXTURE_DIR/cwd"; printf '%s\n' "$TMP_ROOT" > "$FIXTURE_DIR/foreground-cwd"; assert_preserved "unverified Git directory"
 
 INTEGRATION_ROOT="$TMP_ROOT/bootstrap-integration"
 mkdir -p "$INTEGRATION_ROOT/home/state" "$INTEGRATION_ROOT/home/data" "$INTEGRATION_ROOT/home/config"

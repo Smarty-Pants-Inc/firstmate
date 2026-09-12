@@ -125,9 +125,8 @@ resolve_local_transport() { # <id> <resolved-home>
   fi
   backend=$(fm_backend_of_meta "$meta")
   target=$(fm_backend_target_of_meta "$meta")
-  [ -n "$target" ] || target=$(fm_meta_get "$meta" window)
   if [ -z "$target" ]; then
-    set_transport direct 'recorded endpoint has no target'
+    set_transport unavailable 'recorded endpoint could not be validated'
     return 0
   fi
   case "$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || printf 'unreadable')" in

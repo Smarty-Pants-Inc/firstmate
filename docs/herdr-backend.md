@@ -81,10 +81,12 @@ Closing its last tab can remove the workspace, and the next spawn recreates it.
 
 ## Native project membership and moves
 
-After Treehouse produces a validated linked worktree, a single-task projection can acquire native project membership through `worktree.open` when that method is available.
+After Treehouse produces a validated linked worktree, a single-task projection requires verified native project membership through `worktree.open`.
 `bin/backends/herdr-project.sh` verifies the real Git parent and linked child, the singleton task workspace, and the native prospective target before adoption.
 The returned workspace, tab, pane, terminal and source directory must remain the expected ones.
 Neither labels nor home directories manufacture a Git relationship, and no second allocator runs.
+Unavailable capability inspection or unverified membership refuses launch and preserves the allocated terminal, shell and presentation journal for reconciliation.
+A retained journal without an authoritative task record refuses another allocation.
 Flat layouts and secondmate homes are not adopted as linked worktrees by this path.
 
 Native lookup is not an atomic expected-target operation.
@@ -187,7 +189,7 @@ A same-identity version 2 binding may replace one exact agent-free restart husk 
 The replacement tab and pane are created and verified before the old pane is rechecked and closed, then the journal advances atomically to the replacement endpoint before metadata publication.
 The reclaim path never moves, closes, deletes, or renames a workspace and never touches a parent, sibling, captain, or foreign pane.
 A failed replacement rolls back only the exact response-derived new pane when focus-safe verification permits it.
-Version 1 journals, dead or missing panes, duplicate or absent tokens, renamed or detached spaces, cross-home mismatches, inconsistent endpoint bindings, active target tabs, and ambiguous identity or focus fall back flat without mutating the old projection when duplicate-agent risk is positively absent.
+With an authoritative task record, version 1 journals, dead or missing panes, duplicate or absent tokens, renamed or detached spaces, cross-home mismatches, inconsistent endpoint bindings, active target tabs, and ambiguous identity or focus fall back flat without mutating the old projection when duplicate-agent risk is positively absent.
 A live or unknown recorded or token-matched endpoint refuses duplicate launch.
 
 Locked session start has one narrower cleanup for a restored projected child that is no longer current task state.
@@ -195,6 +197,7 @@ It runs only when the current home has at least one ordinary presentation journa
 Discovery starts from the exact current `└ <concise-task> · p:<22-character-token>` grammar, but a title or token alone is never mutation authority.
 The title must contain exactly one token occurrence across the named-session snapshot and must equal the title derived from exactly one valid presentation journal in this home's own `state/`; a version 2 journal additionally must bind this exact physical home, named session, workspace, tab, and pane.
 The task's ordinary metadata must be absent, and the candidate must have exactly one tab and exactly one pane.
+Its verified foreground directory must still equal its creation directory and be a primary Git checkout; linked, changed or unverified directories remain untouched for reconciliation.
 Before cleanup, Firstmate acquires the existing task-id spawn lock and then the shared named-session presentation lock.
 Inside both locks it takes one exact snapshot, requires one unambiguous non-target focus and the exact title, token, tab, and pane shape, positively confirms no registered agent, and reads Herdr's process information for the exact named-session pane.
 The process proof requires one recognized idle shell as both the shell process and the sole foreground process-group member, an operating-system process-table row for that shell, no child process, and a sleeping or idle shell state.

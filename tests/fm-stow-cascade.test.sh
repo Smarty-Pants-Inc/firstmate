@@ -251,6 +251,37 @@ test_transport_routes_by_placement_and_liveness() {
   pass "transport follows placement and live-agent state, and a remote home without an agent defers"
 }
 
+test_unverified_retained_endpoint_never_authorizes_direct_curation() {
+  local primary home field out rc
+  primary=$(new_primary retained-endpoint)
+  home=$(new_home retained)
+  local_record retained "$home" > "$primary/data/secondmates.md"
+  fm_write_secondmate_meta "$primary/state/retained.meta" "$home" 'retained:w1:p1' alpha pi
+  printf '%s\n' 'backend=herdr' \
+    'herdr_session=retained' 'herdr_workspace_id=w1' 'herdr_tab_id=w1:t1' 'herdr_pane_id=w1:p1' \
+    >> "$primary/state/retained.meta"
+  cp "$primary/state/retained.meta" "$primary/meta-before"
+  cat > "$FAKEBIN/herdr" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = 'pane get' ]; then
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
+fi
+exit 1
+SH
+  chmod +x "$FAKEBIN/herdr"
+  for field in herdr_move herdr_route; do
+    cp "$primary/meta-before" "$primary/state/retained.meta"
+    printf '%s={}\n' "$field" >> "$primary/state/retained.meta"
+    rc=0
+    out=$(run_cascade "$primary") || rc=$?
+    expect_code 3 "$rc" "$field must leave curation unavailable"
+    [ "$(value_in "$(stanza "$out" retained)" transport)" = unavailable ] \
+      || fail "$field allowed direct curation from an obsolete endpoint"
+    assert_contains "$out" 'recorded endpoint could not be validated' 'cascade lost the validation refusal'
+  done
+  pass 'unverified retained endpoints never authorize direct home curation'
+}
+
 test_receipt_facts_are_complete_and_show_before_and_after() {
   local primary home before after s
   primary=$(new_primary receipt)
@@ -365,6 +396,7 @@ test_no_cascade_without_secondmates_or_from_a_secondmate_home() {
 test_budget_is_enforced_per_home_and_never_summed
 test_every_registered_home_is_enumerated_exactly_once
 test_transport_routes_by_placement_and_liveness
+test_unverified_retained_endpoint_never_authorizes_direct_curation
 test_receipt_facts_are_complete_and_show_before_and_after
 test_a_slow_remote_is_bounded_and_the_rest_still_report
 test_no_cascade_without_secondmates_or_from_a_secondmate_home
