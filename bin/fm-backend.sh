@@ -536,7 +536,8 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id> [teardown-close-m
           return 1
         }
         fm_backend_source herdr || return 1
-        # shellcheck source=bin/backends/herdr-enroll.sh
+        # Herdr helpers are canonical lint roots, like the adapters in fm_backend_source.
+        # shellcheck source=/dev/null
         . "$FM_BACKEND_LIB_DIR/backends/herdr-enroll.sh"
         if [ "$endpoint_closed" = 0 ] && { ! fm_backend_herdr_enrollment_source "$enrollment" allow-dirty \
           || ! fm_backend_herdr_enrollment_identity "$enrollment"; }; then
@@ -546,7 +547,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id> [teardown-close-m
       fi
       if grep -q '^herdr_route=' "$meta"; then
         fm_backend_source herdr || return 1
-        # shellcheck source=bin/backends/herdr-pane-move.sh
+        # shellcheck source=/dev/null
         . "$FM_BACKEND_LIB_DIR/backends/herdr-pane-move.sh"
         fm_backend_herdr_route_identity "$meta" "$id" "$endpoint_closed" || {
           echo "REFUSED: task $id no longer has its recorded moved endpoint identity." >&2
@@ -644,7 +645,7 @@ fm_backend_meta_for_window() {  # <target> <state-dir>
   [ -n "$found" ] || return 1
   if [ -n "$former" ]; then
     fm_backend_source herdr || return 2
-    # shellcheck source=bin/backends/herdr-pane-move.sh
+    # shellcheck source=/dev/null
     . "$FM_BACKEND_LIB_DIR/backends/herdr-pane-move.sh"
     fm_backend_herdr_route_selector "$found" "$target" || {
       echo "REFUSED: former Herdr selector '$target' no longer has an exact task binding." >&2

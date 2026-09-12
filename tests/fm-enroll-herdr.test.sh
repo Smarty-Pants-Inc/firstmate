@@ -278,7 +278,6 @@ cmp "$TMP_ROOT/meta-before" "$META" || fail 'duplicate enrollment altered metada
   receipt=$(cat "$TMP_ROOT/expect.json")
   fm_backend_herdr_enrollment_identity "$receipt" || exit 1
   uname() { printf '%s\n' "$platform"; }
-  lsof() { printf 'n%s\n' "$TMP_ROOT/worktree"; }
   for platform in Darwin FreeBSD; do
     if fm_backend_herdr_enrollment_identity "$receipt"; then exit 1; fi
   done
