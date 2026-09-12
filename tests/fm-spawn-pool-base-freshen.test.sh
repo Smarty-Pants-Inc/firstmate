@@ -384,6 +384,109 @@ test_unreachable_origin_refuses_stale_pool_base() {
   pass "an unreachable origin refuses a potentially stale pooled worktree"
 }
 
+test_projected_allocation_survives_freshening_failure() (
+  local rec id out status pid= journal
+  trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
+  id=pool-projected-fetch-failure
+  rec=$(make_case projected-fetch-failure "$id")
+  read_case_record "$rec"
+  git -C "$POOL_DIR" remote set-url origin "file://$CASE_DIR/missing-origin.git"
+  printf 'on\n' > "$HOME_DIR/config/herdr-presentation-spaces"
+  mkfifo "$CASE_DIR/input"
+  bash -c 'cd "$1"; exec 3<>"$2"; printf ready > "$3"; read -r unused <&3' \
+    shell "$POOL_DIR" "$CASE_DIR/input" "$CASE_DIR/ready" &
+  pid=$!
+  for _ in {1..100}; do [ ! -f "$CASE_DIR/ready" ] || break; sleep .01; done
+  [ -f "$CASE_DIR/ready" ] || fail 'allocation shell did not start'
+  export FM_TEST_HERDR_CASE="$CASE_DIR" FM_TEST_HERDR_PID="$pid" HERDR_SESSION=allocation-test
+  unset HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET HERDR_SOCKET_PATH
+  cat > "$FAKEBIN_DIR/herdr" <<'PY'
+#!/usr/bin/env python3
+import json, os, pathlib, signal, sys
+root = pathlib.Path(os.environ['FM_TEST_HERDR_CASE'])
+path = root / 'endpoint.json'
+state = json.loads(path.read_text()) if path.exists() else dict(panes={}, tabs={}, allocated=False)
+args = sys.argv[1:]
+with (root / 'herdr.log').open('a') as log:
+    log.write(json.dumps(args) + '\n')
+def option(name):
+    return args[args.index(name) + 1]
+def reply(**result):
+    print(json.dumps(dict(result=result)))
+def absent():
+    print(json.dumps(dict(error=dict(code='pane_not_found'))), file=sys.stderr)
+    sys.exit(1)
+command = args[:2]
+if args[0] == 'status':
+    print(json.dumps(dict(client=dict(protocol=14, version='0.8.0'), server=dict(running=True))))
+elif command == ['session', 'list']:
+    print(json.dumps(dict(sessions=[dict(name='allocation-test', running=True, socket_path=str(root/'herdr.sock'))])))
+elif command == ['workspace', 'list']:
+    spaces = [dict(workspace_id='w1', label='firstmate', focused=True, active_tab_id='w1:t1')]
+    if 'label' in state:
+        spaces.append(dict(workspace_id='w2', label=state['label'], focused=False, active_tab_id='w2:t1'))
+    reply(workspaces=spaces)
+elif command == ['workspace', 'create'] or command == ['tab', 'create']:
+    seed = command[0] == 'workspace'
+    pane, tab = ('w2:p0', 'w2:t0') if seed else ('w2:p1', 'w2:t1')
+    if seed:
+        state['label'] = option('--label')
+    state['tabs'][tab] = dict(tab_id=tab, workspace_id='w2', label='1' if seed else option('--label'), focused=False)
+    state['panes'][pane] = dict(pane_id=pane, tab_id=tab, workspace_id='w2', terminal_id=pane, cwd=str(root/'project'))
+    reply(workspace=dict(workspace_id='w2'), tab=state['tabs'][tab], root_pane=state['panes'][pane])
+elif command == ['tab', 'list']:
+    reply(tabs=[dict(tab_id='w1:t1', focused=True)] if option('--workspace') == 'w1' else list(state['tabs'].values()))
+elif command == ['pane', 'list']:
+    reply(panes=list(state['panes'].values()))
+elif command == ['pane', 'get']:
+    if args[2] not in state['panes']:
+        absent()
+    pane = dict(state['panes'][args[2]])
+    pane['foreground_cwd'] = str(root/('pool' if state['allocated'] else 'project'))
+    reply(pane=pane)
+elif command == ['pane', 'close']:
+    pane = state['panes'].pop(args[2], None)
+    if pane:
+        state['tabs'].pop(pane['tab_id'])
+    if args[2] == 'w2:p1':
+        os.kill(int(os.environ['FM_TEST_HERDR_PID']), signal.SIGTERM)
+    reply()
+elif command == ['pane', 'run']:
+    state['allocated'] = True
+    reply()
+elif command == ['agent', 'get']:
+    print(json.dumps(dict(error=dict(code='agent_not_found'))), file=sys.stderr)
+    sys.exit(1)
+elif args[:3] == ['terminal', 'title', 'clear']:
+    reply(reason='no_foreground_client')
+else:
+    sys.exit(1)
+path.write_text(json.dumps(state))
+PY
+  chmod +x "$FAKEBIN_DIR/herdr"
+  out=$(run_spawn "$id" --scout --backend herdr)
+  status=$?
+  [ "$status" -ne 0 ] || fail 'projected spawn accepted an unreachable origin'
+  assert_contains "$out" 'could not fetch origin' 'projected spawn did not reach freshening'
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$INITIAL_SHA" ] || fail 'failed freshening changed the allocated checkout'
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail 'failed freshening published a completed task'
+  kill -0 "$pid" || fail 'failed freshening killed the allocated shell'
+  journal="$HOME_DIR/state/$id.herdr-presentation"
+  FM_HOME="$HOME_DIR" bash -c '. "$1/bin/backends/herdr.sh"; fm_backend_herdr_projection_journal_snapshot "$2" "$3"' \
+    fixture "$ROOT" "$journal" "$id" || fail 'failed freshening lost the reconciliation journal'
+  python3 - "$CASE_DIR" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+state = json.loads((root/'endpoint.json').read_text())
+assert state['allocated'] and list(state['panes']) == ['w2:p1'], state
+commands = [json.loads(line) for line in (root/'herdr.log').read_text().splitlines()]
+assert len([c for c in commands if c[:2] == ['pane', 'run']]) == 1, commands
+assert not any(c[:3] == ['pane', 'close', 'w2:p1'] for c in commands), commands
+PY
+  [ "$?" -eq 0 ] || fail 'failed freshening retried allocation or removed its endpoint'
+  pass 'projected fetch failure retains the allocated endpoint, shell and reconciliation journal'
+)
+
 test_direct_pr_and_scout_refresh_before_launch() {
   local rec id out status contract current
   for contract in direct-pr scout; do
@@ -684,6 +787,7 @@ test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool
 test_unreachable_origin_refuses_stale_pool_base
+test_projected_allocation_survives_freshening_failure || exit 1
 test_originless_pool_launches_without_a_freshness_fetch
 test_originless_dirty_pool_refuses_without_discarding_work
 test_origin_config_without_url_refuses_pool

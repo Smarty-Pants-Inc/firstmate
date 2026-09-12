@@ -2070,16 +2070,20 @@ SH
 }
 
 test_herdr_retained_teardown_retries_own_closed_generation() (
-  local case_dir binding pid= birth channel log closed meta marker rc mutation
+  local case_dir binding pid= birth channel log closed meta marker rc mutation home nested_home child_meta
   [ "$(uname -s)" = Linux ] || return 0
   trap '[ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }' EXIT
-  for binding in moved enrolled; do
+  for binding in moved enrolled recursive; do
     case_dir=$(make_case "herdr-retained-retry-$binding")
     configure_secondmate_home "$case_dir" local "$case_dir/parent"
     channel="$case_dir/parent/state/mate-x.status"
     mkdir -p "$channel"
     write_meta "$case_dir" local-only ship
-    seed_backlog_in_flight "$case_dir"
+    if [ "$binding" = recursive ]; then
+      seed_backlog_in_flight "$case_dir" secondmate
+    else
+      seed_backlog_in_flight "$case_dir"
+    fi
     configure_flat_herdr_teardown_case "$case_dir"
     export FM_HOME="$case_dir/home" FM_FAKE_HERDR_LOG="$case_dir/herdr.log" FM_FAKE_HERDR_CLOSED="$case_dir/closed"
     log=$FM_FAKE_HERDR_LOG; closed=$FM_FAKE_HERDR_CLOSED
@@ -2115,6 +2119,53 @@ with (p/'state/task-x1.meta').open('a') as f:
             shell_pid=int(pid),shell_identity=birth,parent_workspace='wH',pi_session_file=root+'/history.jsonl',pi_session_id=sid)
         f.write('herdr_enrollment='+json.dumps(receipt)+'\nherdr_parent_workspace_id=wH\npi_session_file='+root+'/history.jsonl\npi_session_id='+sid+'\n')
 PY
+    if [ "$binding" = recursive ]; then
+      home="$case_dir/home"; nested_home="$home/nested-home"
+      mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects" \
+        "$nested_home/state" "$nested_home/data" "$nested_home/config" "$nested_home/projects" \
+        "$case_dir/primary"
+      printf 'task-x1\n' > "$home/.fm-secondmate-home"
+      printf 'nested-sm\n' > "$nested_home/.fm-secondmate-home"
+      child_meta="$nested_home/state/task-x1.meta"
+      mv "$meta" "$child_meta"
+      python3 - "$child_meta" "$nested_home" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text().splitlines()
+for i, line in enumerate(lines):
+    if line.startswith('herdr_enrollment='):
+        receipt = json.loads(line.split('=', 1)[1])
+        receipt['home'] = sys.argv[2]
+        lines[i] = 'herdr_enrollment=' + json.dumps(receipt)
+path.write_text('\n'.join(lines) + '\n')
+PY
+      fm_write_meta "$home/state/nested-sm.meta" \
+        'window=firstmate:fm-nested-sm' 'endpoint_task_id=nested-sm' \
+        "worktree=$case_dir/wt" "project=$case_dir/project" \
+        'kind=secondmate' 'mode=local-only' "home=$nested_home"
+      write_meta "$case_dir" local-only secondmate
+      printf 'home=%s\n' "$home" >> "$meta"
+      export FM_HOME="$case_dir/primary"
+      cp "$child_meta" "$case_dir/child-before"
+      sed "s|$nested_home|$FM_HOME|g" "$case_dir/child-before" > "$child_meta"
+      rc=0
+      run_teardown "$case_dir" --force > "$case_dir/refused.out" 2> "$case_dir/refused.err" || rc=$?
+      [ "$rc" -ne 0 ] || fail 'recursive cleanup accepted a conflicting child owning home'
+      assert_grep 'conflicting retained enrollment binding' "$case_dir/refused.err" 'recursive cleanup bypassed enrollment ownership'
+      [ -f "$child_meta" ] && [ -f "$meta" ] && [ ! -e "$closed" ] && [ -d "$case_dir/wt" ] \
+        || fail 'conflicting child ownership changed the endpoint, source or records'
+      cp "$case_dir/child-before" "$child_meta"
+      run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+        || fail "recursive enrolled cleanup failed: $(cat "$case_dir/stderr")"
+      [ -f "$closed" ] && [ ! -e "$home" ] && [ ! -e "$meta" ] \
+        || fail 'recursive enrolled cleanup did not close the endpoint and remove authorized homes'
+      [ "$(grep -c '^pane close ' "$log")" = 1 ] || fail 'recursive enrolled cleanup did not resolve the exact child endpoint'
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      pid=
+      pass 'recursive enrolled cleanup uses each child owning home and refuses conflicting receipts'
+      continue
+    fi
     printf 'done: retained cleanup result\n' > "$case_dir/state/task-x1.status"
     rc=0
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
@@ -3772,7 +3823,7 @@ test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_secondmate_pr_registration_publishes_ready_line
 test_secondmate_home_teardown_delivers_final_line_or_refuses
-test_herdr_retained_teardown_retries_own_closed_generation
+test_herdr_retained_teardown_retries_own_closed_generation || exit 1
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes

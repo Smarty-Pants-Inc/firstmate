@@ -3096,6 +3096,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  [ "${HERDR_PROJECTED:-0}" != 1 ] || HERDR_PROJECTION_ABORT_CLEANUP=0
   spawn_send_text_line "$WT_TARGET" "$TREEHOUSE_GET" || {
     echo "error: could not submit the resolved Treehouse allocation command; inspect window $T" >&2
     exit 1
@@ -3170,13 +3171,11 @@ fi
 if [ "${HERDR_PROJECTED:-0}" = 1 ] && [ "$KIND" != secondmate ]; then
   # shellcheck source=bin/backends/herdr-project.sh
   . "$FM_ROOT/bin/backends/herdr-project.sh"
-  HERDR_ADOPT_CLEANUP=$HERDR_PROJECTION_ABORT_CLEANUP
-  HERDR_PROJECTION_ABORT_CLEANUP=0
   HERDR_ADOPT_STATUS=0
   fm_backend_herdr_project_adopt "$HERDR_SES" "$WT" "$HERDR_WORKSPACE_ID" "$HERDR_PANE_ID" \
     || HERDR_ADOPT_STATUS=$?
   case "$HERDR_ADOPT_STATUS" in
-    0|2) HERDR_PROJECTION_ABORT_CLEANUP=$HERDR_ADOPT_CLEANUP ;;
+    0|2) : ;;
     *)
       echo "error: native Herdr worktree membership could not be verified for $T; preserving the endpoint and any partial membership; do not repeat or remove the worktree" >&2
       exit 1
